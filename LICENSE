@@ -1,0 +1,15 @@
+This repository is licensed under the GNU General Public License, version 2 or
+(at your option) any later version (SPDX: GPL-2.0-or-later).
+
+- The kernel patches must be GPL-2.0 because they modify the Linux kernel.
+  Patches that are the work of other people keep their own authors and
+  Signed-off-by lines and the license of the file they touch (see NOTICE.md).
+- The scripts, systemd units and config snippets are also released under
+  GPL-2.0-or-later, for simplicity (one license for everything).
+
+The full text of the GPL version 2 is in LICENSE.GPL-2.0-text (copied from
+/usr/share/common-licenses/GPL-2 of a Debian system). Newer versions are at
+https://www.gnu.org/licenses/.
+
+THERE IS NO WARRANTY, to the extent permitted by law. See section 11 and 12 of
+the license text.
