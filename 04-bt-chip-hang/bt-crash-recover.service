@@ -1,0 +1,10 @@
+[Unit]
+Description=Auto-recover the Bluetooth chip when its firmware hangs
+
+[Service]
+ExecStart=/usr/local/bin/bt-crash-recover.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

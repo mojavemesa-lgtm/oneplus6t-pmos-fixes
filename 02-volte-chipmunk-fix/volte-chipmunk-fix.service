@@ -1,0 +1,10 @@
+[Unit]
+Description=Set q6voice topology to NONE (fixes chipmunk VoLTE call audio)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/volte-chipmunk-fix.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=default.target

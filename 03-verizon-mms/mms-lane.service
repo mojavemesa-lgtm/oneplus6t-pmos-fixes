@@ -1,0 +1,12 @@
+[Unit]
+Description=Verizon MMS lane (keeps a vzwapp bearer up for mmsd-tng)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/mms-lane.sh watch
+Restart=always
+RestartSec=20
+
+[Install]
+WantedBy=default.target
