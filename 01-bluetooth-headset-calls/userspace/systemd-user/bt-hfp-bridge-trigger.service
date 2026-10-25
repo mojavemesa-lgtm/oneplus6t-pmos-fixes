@@ -1,0 +1,10 @@
+[Unit]
+Description=Bring the Bluetooth headset (HFP) audio bridge up/down as headsets come and go
+[Service]
+ExecStart=%h/.local/bin/bt-hfp-bridge-trigger
+ExecStopPost=%h/.local/bin/bt-hfp-bridge down
+Environment=PULSE_CLIENTCONFIG=%h/.config/pulse/client-noautospawn.conf
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=default.target

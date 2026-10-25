@@ -1,0 +1,11 @@
+[Unit]
+Description=bt-hfp-call: route modem voice calls to a connected Bluetooth HFP headset (SLIMBUS_7 voice mixers)
+After=pulseaudio.service
+
+[Service]
+ExecStart=%h/.local/bin/bt-hfp-call monitor
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

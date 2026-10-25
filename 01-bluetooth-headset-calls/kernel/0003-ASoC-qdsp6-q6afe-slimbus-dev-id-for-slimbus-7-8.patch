@@ -1,0 +1,40 @@
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 12:00:00 -0700
+Subject: [PATCH 3/6] ASoC: qdsp6: q6afe: use SLIMbus device 2 for SLIMBUS_7/8
+
+SLIMBUS_7/8 sit on the second SLIMbus controller, so the AFE port config must
+set slimbus_dev_id = AFE_SLIMBUS_DEVICE_2 for them. Note the comparison has to
+use port->token (the DAI id); port->id is the AFE hardware id (0x400e..0x4011),
+which never matches SLIMBUS_7_RX..SLIMBUS_8_TX. Without this no audio reached
+the headset.
+
+Tested on OnePlus 6T (fajita) with wcn3990-bluetooth-hfp-v4 on 7.1-rc1.
+
+Assisted-by: Claude (Anthropic)
+---
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -85,6 +85,8 @@
+ /* USB AFE port */
+ #define AFE_PORT_ID_USB_RX                       0x7000
+ 
++#define AFE_SLIMBUS_DEVICE_1		0x0
++#define AFE_SLIMBUS_DEVICE_2		0x1
+ #define AFE_API_VERSION_SLIMBUS_CONFIG 0x1
+ /* Clock set API version */
+ #define AFE_API_VERSION_CLOCK_SET 1
+@@ -1388,6 +1390,14 @@
+ 	union afe_port_config *pcfg = &port->port_cfg;
+ 
+ 	pcfg->slim_cfg.sb_cfg_minor_version = AFE_API_VERSION_SLIMBUS_CONFIG;
++	/*
++	 * SLIMBUS_7/8 are on the second SLIMbus controller (WCN3990 Bluetooth). Compare the DAI id
++	 * (port->token); port->id is the AFE hardware port id.
++	 */
++	if (port->token >= SLIMBUS_7_RX && port->token <= SLIMBUS_8_TX)
++		pcfg->slim_cfg.slimbus_dev_id = AFE_SLIMBUS_DEVICE_2;
++	else
++		pcfg->slim_cfg.slimbus_dev_id = AFE_SLIMBUS_DEVICE_1;
+ 	pcfg->slim_cfg.sample_rate = cfg->sample_rate;
+ 	pcfg->slim_cfg.bit_width = cfg->bit_width;
+ 	pcfg->slim_cfg.num_channels = cfg->num_channels;

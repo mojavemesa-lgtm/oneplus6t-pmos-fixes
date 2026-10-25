@@ -1,0 +1,87 @@
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 04:30:00 -0700
+Subject: [PATCH 7/7] Bluetooth + ASoC: wideband (mSBC) HFP on the WCN3990 offload path
+
+PulseAudio negotiates mSBC with the headset and asks the kernel for a
+transparent SCO link (it expects to do mSBC itself). On the offload path the
+host never sees the SCO data, so map that request to BT_CODEC_MSBC: the
+controller encodes mSBC and takes 16 kHz linear PCM over SLIMbus.
+
+The DSP side of SLIMBUS_7 must then run at 16 kHz too. The voice front end is
+fixed at 8 kHz and the BE fixup cannot know the air codec, so add a card
+control "BT SCO Rate" (8000/16000) that userspace sets from the negotiated
+codec before the ports open. A rate mismatch gives silence downlink and a
+faint "crunch" uplink.
+
+Needs PulseAudio module-bluetooth-discover enable_msbc=true (default).
+transport_unit_size 1 (upstream value) works for mSBC.
+
+Tested on OnePlus 6T (fajita): real cellular calls both ways with mSBC.
+
+Assisted-by: Claude (Anthropic)
+---
+--- a/net/bluetooth/hci_conn.c
++++ b/net/bluetooth/hci_conn.c
+@@ -302,6 +302,12 @@
+ 			conn->codec.data_path = dp;
+ 	}
+ 
++	/* Offload path: the host never sees SCO data, so a transparent (host mSBC) request
++	 * means the controller must do mSBC itself: 16 kHz linear PCM in, mSBC on air.
++	 */
++	if (conn->codec.data_path && conn->codec.id == BT_CODEC_TRANSPARENT)
++		conn->codec.id = BT_CODEC_MSBC;
++
+ 	conn->state = BT_CONNECT;
+ 	conn->out = true;
+ 
+--- a/sound/soc/qcom/sdm845.c
++++ b/sound/soc/qcom/sdm845.c
+@@ -569,6 +569,28 @@
+ 	.shutdown = sdm845_snd_shutdown,
+ };
+ 
++static unsigned int bt_sco_rate = WCN_SAMPLE_RATE_8K;
++static const char * const bt_sco_rate_text[] = { "8000", "16000" };
++static SOC_ENUM_SINGLE_EXT_DECL(bt_sco_rate_enum, bt_sco_rate_text);
++
++static int bt_sco_rate_get(struct snd_kcontrol *kc, struct snd_ctl_elem_value *uc)
++{
++	uc->value.enumerated.item[0] = bt_sco_rate == 16000;
++	return 0;
++}
++
++static int bt_sco_rate_put(struct snd_kcontrol *kc, struct snd_ctl_elem_value *uc)
++{
++	unsigned int rate = uc->value.enumerated.item[0] ? 16000 : WCN_SAMPLE_RATE_8K;
++
++	if (uc->value.enumerated.item[0] > 1)
++		return -EINVAL;
++	if (rate == bt_sco_rate)
++		return 0;
++	bt_sco_rate = rate;
++	return 1;
++}
++
+ static int sdm845_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+ 				struct snd_pcm_hw_params *params)
+ {
+@@ -582,8 +604,8 @@
+ 	switch (cpu_dai->id) {
+ 	case SLIMBUS_7_RX:
+ 	case SLIMBUS_7_TX:
+-		/* Bluetooth SCO HFP is limited to 8kHz, Bluetooth A2DP handles up to 48kHz */
+-		rate->min = rate->max = WCN_SAMPLE_RATE_8K;
++		/* Bluetooth SCO: 8 kHz for CVSD, 16 kHz for mSBC, set by userspace via "BT SCO Rate" */
++		rate->min = rate->max = bt_sco_rate;
+ 		channels->min = channels->max = 1;
+ 		dev_info(rtd->dev, "sdm845_be_hw_params_fixup: SLIMBUS 7/8 fixup\n");
+ 		break;
+@@ -608,6 +630,7 @@
+ static const struct snd_kcontrol_new sdm845_snd_controls[] = {
+ 	SOC_DAPM_PIN_SWITCH("Headphone Jack"),
+ 	SOC_DAPM_PIN_SWITCH("Headset Mic"),
++	SOC_ENUM_EXT("BT SCO Rate", bt_sco_rate_enum, bt_sco_rate_get, bt_sco_rate_put),
+ };
+ 
+ static void sdm845_add_ops(struct snd_soc_card *card)

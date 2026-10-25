@@ -1,0 +1,143 @@
+#!/bin/sh
+# bt-hfp-call: put a modem voice call on a connected Bluetooth headset through the ADSP (OnePlus 6T, hfp kernel).
+# POLICY (2026-10-17, user report: music sounded awful because the headset was held in HFP all the time): like Android,
+# the headset stays in A2DP (music quality) and switches to HFP (8/16 kHz phone-call mode) ONLY for the call,
+# then goes back to A2DP. Android does the same: SCO only for a telecom call, a virtual call or a voice-
+# recognition session (AOSP HeadsetService "SCO audio modes"), A2DP suspended meanwhile.
+# Call path: the stock UCM "Voice Call" verb routes VoiceMMode1 <-> SLIMBUS_0 (earpiece/mic); a HFP headset lives
+# on SLIMBUS_7. q6voice fixes the ports when q6voiced opens hw:0,6, so after the mixer swap q6voiced-reopen
+# (SIGUSR1) reopens the voice PCMs. The source suspend/resume after the reopen was meant to force a fresh eSCO;
+# btmon showed a source-only suspend does not renew it, and the silent calls were a kernel bug (NGD has no
+# disable_stream, fixed 2026-10-18). Kept only because every verified call ran with it.
+# MUSIC AND CALLS (2026-10-18, user report: after a call the music showed playing but stayed silent):
+# - like any phone, media players that are playing are paused for every call and resumed after it (MPRIS);
+# - PulseAudio's own HFP sink can play nothing here (the call audio runs in the DSP, its SCO writes fail with
+#   EINVAL) and it reports a delay that grows a second per second of call. PA 17 pads a stream that leaves a sink
+#   with that sink's delay as silence (restore_render_memblockq), so music came back only after about as long as
+#   the call had lasted. So no stream may sit on it: during a headset call other sounds go to a stand-in null sink
+#   (call_hold), and at call end the HFP sink is suspended at once (a suspended sink's delay reads 0).
+# CALL GREETING (2026-10-18, user report: in headset calls the greeting only played in the earpiece): the greeting
+# (a separate call-greeting script) is spoken into the codec's uplink SLIMBUS_0_TX, which a headset call does not
+# use. While it is pending (call-greeting.pending, written when a call appears) the uplink is left on SLIMBUS_0_TX
+# (the phone's mic until the greeting); call-greeting.py moves it to the headset mic (SLIMBUS_7_TX) and reopens
+# once it has spoken. FLAG gets "TX=... READY=1" when the ports are set; both scripts swap ports under LOCK.
+# Usage: bt-hfp-call on|off|status|monitor   (monitor = follow callaudiod AudioMode on the session bus)
+export PULSE_CLIENTCONFIG=$HOME/.config/pulse/client-noautospawn.conf
+LOG=${BT_HFP_CALL_LOG:-$HOME/.cache/bt-hfp-call.log}
+FLAG=$HOME/.cache/bt-hfp-call.active      # holds the headset card + its profile before the call
+BUILTIN_SRC=alsa_input.platform-sound.HiFi__Mic1__source
+HOLD=call_hold                              # stand-in output while the headset is in call mode (see top)
+PAUSED=$HOME/.cache/bt-hfp-call.paused      # media players paused for the call, resumed after it
+PENDING=$HOME/.cache/call-greeting.pending  # call-greeting.py has a greeting to speak in this call
+LOCK=$HOME/.cache/voice-port.lock           # voice port swaps, shared with call-greeting.py
+log() { echo "$(date +%T) $*" >> "$LOG"; }
+lock() { exec 9>"$LOCK"; flock -w 10 9 || log "lock: waited 10 s, going on"; }
+unlock() { flock -u 9; exec 9>&-; }
+# first connected bluez card that offers an available HFP head-unit profile, and its active profile
+bt_card() { pactl list cards 2>/dev/null | awk '/^Card #/{c="";p=""} /Name: bluez_card\./{c=$2} /^\t\thandsfree_head_unit: .*available: yes/{ok[c]=1} /Active Profile: /{p=$3; if(c) ap[c]=p} END{for(c in ok){print c, ap[c]; exit}}'; }
+hfp_src() { pactl list sources short 2>/dev/null | awk -v m="$1" '$2 ~ "^bluez_source\\." m "\\.handsfree_head_unit"{print $2}' | head -1; }
+cset() { amixer -q -c0 cset name="$1" "$2" 2>/dev/null; }
+# SCO sample rate of the card's HFP link: mSBC ("HD voice") = 16 kHz, CVSD = 8 kHz. The DSP side of SLIMBUS_7
+# must match it (kernel control "BT SCO Rate", custom snd-soc-sdm845 2026-10-21); set before the ports open.
+sco_rate() { c=$(pactl list cards 2>/dev/null | awk -v n="$1" '/^\tName: /{f=($2==n)} f && /bluetooth.codec = /{gsub(/"/,"",$3); print $3; exit}')
+  r=8000; case "$c" in [mM][sS][bB][cC]) r=16000;; esac
+  amixer -q -c0 cset name='BT SCO Rate' $r 2>/dev/null; echo $r; }
+has_sink() { pactl list sinks short 2>/dev/null | awk -v n="$1" '$2==n{f=1} END{exit !f}'; }
+# media players playing now on this phone (players of Bluetooth devices bridged in by mpris-proxy are not ours)
+playing() { playerctl -l 2>/dev/null | while read -r p; do
+    busctl --user status "org.mpris.MediaPlayer2.$p" 2>/dev/null | grep -qx 'Comm=mpris-proxy' && continue
+    [ "$(playerctl -p "$p" status 2>/dev/null)" = Playing ] && echo "$p"; done; }
+media_pause() {
+  find "$PAUSED" -mmin +180 -delete 2>/dev/null; [ -f "$PAUSED" ] && return 0   # repeated call event: keep the list
+  playing > "$PAUSED"; [ -s "$PAUSED" ] || { rm -f "$PAUSED"; return 0; }
+  while read -r p; do playerctl -p "$p" pause; done < "$PAUSED"; log "call: paused $(tr '\n' ' ' < "$PAUSED")"; }
+media_resume() {
+  [ -f "$PAUSED" ] || return 0
+  while read -r p; do [ "$(playerctl -p "$p" status 2>/dev/null)" = Paused ] && playerctl -p "$p" play; done < "$PAUSED"
+  log "call end: resumed $(tr '\n' ' ' < "$PAUSED")"; rm -f "$PAUSED"; }
+# uplink port per mode: bt = the headset mic, codec = the phone's SLIMBUS_0_TX (greeting pending, see top)
+tx_port() { [ "$1" = codec ] && echo SLIMBUS_0_TX || echo SLIMBUS_7_TX; }
+# a mixer put sets the port and connects that backend; in codec mode SLIMBUS_7_TX is connected too (the state
+# proven on the PC rig 2026-10-18) and SLIMBUS_0_TX goes last, so it is the port
+ports_bt() {
+  cset 'SLIMBUS_7_RX Voice Mixer VoiceMMode1' 1
+  cset 'VoiceMMode1 Capture Mixer SLIMBUS_7_TX' 1
+  [ "$1" = codec ] && cset 'VoiceMMode1 Capture Mixer SLIMBUS_0_TX' 1; }
+voice_on_bt() { amixer -c0 cget name='SLIMBUS_7_RX Voice Mixer VoiceMMode1' | grep -q "values=on" && amixer -c0 cget name="VoiceMMode1 Capture Mixer $(tx_port "$1")" | grep -q "values=on"; }
+voice_on() {
+  set -- $(bt_card); card=$1; prev=$2
+  [ -n "$card" ] || { log "on: no Bluetooth headset, keeping earpiece"; return 1; }
+  m=${card#bluez_card.}
+  echo "CARD=$card PREV=$prev" > "$FLAG"
+  # a wake-word bridge may be up on SLIMBUS_7 (bt-hfp-bridge, on demand only); the call owns the backend
+  "$HOME/.local/bin/bt-hfp-bridge" down
+  # Order proven 2026-10-18 (PC as headset): 1 headset into HFP, 2 voice -> SLIMBUS_7 + reopen the DSP
+  # ports, 3 a NEW eSCO. Ports opened before the HFP switch, or no new eSCO after it = silent call.
+  if [ "$prev" != handsfree_head_unit ]; then
+    pactl set-card-profile "$card" handsfree_head_unit || { log "on: $card refused HFP, keeping earpiece"; rm -f "$FLAG"; return 1; }
+  fi
+  # nothing may play on PA's HFP sink (see top): other sounds wait on the stand-in sink for the call
+  has_sink $HOLD || pactl load-module module-null-sink sink_name=$HOLD sink_properties=device.description=Call_hold >/dev/null
+  pactl set-default-sink $HOLD
+  for i in 1 2 3 4 5 6 7 8 9 10; do src=$(hfp_src "$m"); [ -n "$src" ] && break; sleep 0.5; done
+  lock
+  find "$PENDING" -mmin +15 -delete 2>/dev/null
+  if [ -f "$PENDING" ] && systemctl --user -q is-active call-greeting; then tx=codec; else tx=bt; fi
+  rate=$(sco_rate "$card")
+  ports_bt $tx
+  sudo -n systemctl kill -s USR1 q6voiced; sleep ${PORT_SETTLE:-1}
+  log "on: $card $prev -> HFP, voice -> SLIMBUS_7, uplink $(tx_port $tx), $rate Hz"
+  # the UCM verb may land after us and point the ports back at the earpiece: check, redo once
+  if ! voice_on_bt $tx; then
+    ports_bt $tx
+    sudo -n systemctl kill -s USR1 q6voiced; sleep ${PORT_SETTLE:-1}; log "on: UCM re-selected the earpiece, swapped + reopened again"
+  fi
+  echo "TX=$tx READY=1" >> "$FLAG"           # call-greeting.py waits for this before it speaks
+  unlock
+  [ -n "$src" ] || src=$(hfp_src "$m")
+  if [ -n "$src" ]; then pactl suspend-source "$src" 1; sleep ${ESCO_GAP:-1}; pactl suspend-source "$src" 0; log "on: fresh eSCO via $src"
+  else log "on: no HFP source for $card (no SCO?)"; fi
+}
+voice_off() {
+  lock                                        # not in the middle of call-greeting.py's port swap
+  cset 'SLIMBUS_7_RX Voice Mixer VoiceMMode1' 0
+  cset 'VoiceMMode1 Capture Mixer SLIMBUS_7_TX' 0
+  [ -f "$FLAG" ] || { unlock; log "off: no headset call"; ( sleep 1; media_resume ) & return 0; }
+  . "$FLAG"; rm -f "$FLAG"; unlock
+  m=${CARD#bluez_card.}
+  # callaudiod now resets the default to an unplugged built-in output, so PA falls back to the HFP sink by
+  # priority: suspend it first, so whatever lands there is held, not padded with the call's length of silence
+  pactl suspend-sink "bluez_sink.$m.handsfree_head_unit" 1 2>/dev/null
+  log "off: SLIMBUS_7 voice mixers cleared"
+  # back to music quality (A2DP); give q6voiced and callaudiod their call-end moment first
+  ( sleep 2
+    case "$PREV" in ""|handsfree_head_unit|off) p=a2dp_sink ;; *) p=$PREV ;; esac
+    has_sink $HOLD && pactl set-default-sink $HOLD      # no speaker blip while the headset changes mode
+    pactl set-card-profile "$CARD" "$p" 2>/dev/null && log "off: $CARD back to $p" || log "off: $CARD gone or no $p"
+    # ONE final default (each change moves the music again): the headset, or the EQ sink bt-eq.service puts on it
+    s=; for i in 1 2 3 4 5 6; do has_sink "bluez_sink.$m.a2dp_sink" && { s=bluez_sink.$m.a2dp_sink; break; }; sleep 0.5; done
+    if [ -n "$s" ] && systemctl --user -q is-active bt-eq && [ "$(cat "$HOME/.config/headphone-eq-preset" 2>/dev/null)" != off ]; then
+      for i in 1 2 3 4 5 6; do has_sink "$s.lsp_eq" && { s=$s.lsp_eq; break; }; sleep 0.5; done
+    fi
+    [ -n "$s" ] && pactl set-default-sink "$s"
+    for x in $(pactl list modules short | awk -v h="sink_name=$HOLD" '$2=="module-null-sink" && index($0, h){print $1}'); do
+      pactl unload-module "$x"; done
+    pactl set-default-source "$BUILTIN_SRC"
+    # resume only where it was: headset gone during the call = stay paused (Android does the same)
+    if [ -n "$s" ]; then log "off: output $s"; media_resume; else log "off: headset gone, media stays paused"; rm -f "$PAUSED"; fi ) &
+}
+status() {
+  echo "BT card: $(bt_card)"; amixer -c0 contents | grep -A2 -E "Voice Mixer VoiceMMode1|VoiceMMode1 Capture Mixer" | grep -E "SLIMBUS_[07]" -A2 | grep -E "name=|values=o" | paste - - | sed 's/.*name=//'
+  grep -h state /proc/asound/card0/pcm6*/sub0/status 2>/dev/null | head -2; hcitool con 2>/dev/null | grep -i sco
+}
+monitor() {
+  log "monitor: start"
+  # callaudiod (D-Bus activated by the dialer) publishes AudioMode: 0 = default, 1 = call
+  gdbus monitor --session --dest org.mobian_project.CallAudio --object-path /org/mobian_project/CallAudio 2>/dev/null | while read -r line; do
+    case "$line" in
+      *AudioMode*"<uint32 1>"*) media_pause; voice_on ;;
+      *AudioMode*"<uint32 0>"*) voice_off ;;
+    esac
+  done
+}
+case "$1" in on) voice_on ;; off) voice_off ;; status) status ;; monitor) monitor ;; *) echo "usage: $0 on|off|status|monitor"; exit 2 ;; esac

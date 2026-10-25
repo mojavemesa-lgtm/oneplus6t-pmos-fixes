@@ -1,0 +1,94 @@
+#!/bin/sh
+# bt-hfp-bridge (2026-10-16): make an HFP headset usable by normal PulseAudio apps on the OnePlus 6T.
+# On this patched kernel BT HFP voice runs through the Qualcomm ADSP, not the host, so PulseAudio's own
+# bluez HFP source/sink carry NO audio. The audio lives on two DSP PCMs of card 0:
+#   headset mic     = capture  hw:0,4 (MultiMedia5) <- SLIMBUS_7_TX, 8 kHz s16 mono
+#   headset speaker = playback hw:0,5 (MultiMedia6) -> SLIMBUS_7_RX, 8 kHz s16 mono
+# 'up' wraps them as PA devices bt-headset-mic / bt-headset-speaker, makes them default, keeps them
+# (and the bluez HFP source, i.e. the SCO link) from idle-suspending, and then recreates the SCO link,
+# because audio only flows on an eSCO link created AFTER the DSP streams were opened ("fresh-eSCO rule").
+# Usage: bt-hfp-bridge up [MAC] | down | status | sync   (sync = what the bt-hfp-bridge.service watcher calls)
+export PULSE_CLIENTCONFIG=$HOME/.config/pulse/client-noautospawn.conf
+ST=$HOME/.local/state/bt-hfp-bridge; mkdir -p "$ST"; S=$ST/state
+CAPMIX="MultiMedia5 Mixer SLIMBUS_7_TX"; PLAYMIX="SLIMBUS_7_RX Audio Mixer MultiMedia6"
+BUILTIN_SRC=alsa_input.platform-sound.HiFi__Mic1__source; BUILTIN_SINK=alsa_output.platform-sound.HiFi__Speaker__sink
+CALLFLAG=$HOME/.cache/bt-hfp-call.active   # set by bt-hfp-call while a call runs on the headset
+NOSUSP="module-suspend-on-idle.timeout=2000000000"
+log() { echo "bt-hfp-bridge: $*" >&2; }
+mix() { amixer -q -c0 cset name="$1" "$2"; }
+# SCO sample rate of the card's HFP link: mSBC ("HD voice") = 16 kHz, CVSD = 8 kHz. The DSP side of SLIMBUS_7
+# must match it (kernel control "BT SCO Rate", custom snd-soc-sdm845 2026-10-21); set before the ports open.
+sco_rate() { c=$(pactl list cards 2>/dev/null | awk -v n="$1" '/^\tName: /{f=($2==n)} f && /bluetooth.codec = /{gsub(/"/,"",$3); print $3; exit}')
+  r=8000; case "$c" in [mM][sS][bB][cC]) r=16000;; esac
+  amixer -q -c0 cset name='BT SCO Rate' $r 2>/dev/null; echo $r; }
+first_card() { pactl list cards short | awk '$2 ~ /^bluez_card\./{print $2; exit}'; }
+up() {
+    mac=$1
+    if [ -z "$mac" ]; then c=$(first_card); [ -n "$c" ] || { log "no bluetooth card"; return 1; }
+        mac=$(echo "${c#bluez_card.}" | tr _ :); fi
+    m_=$(echo "$mac" | tr : _); card=bluez_card.$m_; bsrc=bluez_source.$m_.handsfree_head_unit
+    [ -f "$S" ] && down
+    # remember the defaults BEFORE the profile switch: PA makes the new bluez source default on switch
+    ps=$(pactl get-default-source); pk=$(pactl get-default-sink)
+    pactl set-card-profile "$card" handsfree_head_unit || { log "card $card has no handsfree_head_unit"; return 1; }
+    sleep 2
+    { echo "MAC=$mac"; echo "PREV_SRC=$ps"; echo "PREV_SINK=$pk"; } > "$S"
+    case "$(sed -n 's/^PREV_SRC=//p' "$S")" in bluez_*|bt-headset-*) sed -i 's/^PREV_SRC=.*/PREV_SRC=/' "$S";; esac
+    case "$(sed -n 's/^PREV_SINK=//p' "$S")" in bluez_*|bt-headset-*) sed -i 's/^PREV_SINK=.*/PREV_SINK=/' "$S";; esac
+    # reader on the bluez HFP source first (it carries no audio itself) so PA never idle-closes the SCO link
+    n=$(pactl load-module module-null-sink sink_name=bt-hfp-keepalive rate=8000 channels=1 "sink_properties='device.description=bt-hfp-keepalive'") || { down; return 1; }
+    l=$(pactl load-module module-loopback source="$bsrc" sink=bt-hfp-keepalive latency_msec=200 source_dont_move=true sink_dont_move=true) || { echo "MODS='$n'" >> "$S"; down; return 1; }
+    echo "MODS='$l $n'" >> "$S"
+    sleep 2
+    # fresh eSCO WHILE the reader runs and BEFORE the DSP ports open (proven order: test15/test17)
+    pactl suspend-source "$bsrc" 1; sleep 3; pactl suspend-source "$bsrc" 0; sleep 3
+    r=$(sco_rate "$card")
+    mix "$CAPMIX" 1; mix "$PLAYMIX" 1
+    # tsched=0: DSP (q6asm) PCMs; the suspend-timeout property keeps the PCMs open forever
+    a=$(pactl load-module module-alsa-source device=hw:0,4 rate=$r channels=1 format=s16le tsched=0 \
+        source_name=bt-headset-mic "source_properties='device.description=BT-Headset-Mic $NOSUSP'") || { down; return 1; }
+    b=$(pactl load-module module-alsa-sink device=hw:0,5 rate=$r channels=1 format=s16le tsched=0 \
+        sink_name=bt-headset-speaker "sink_properties='device.description=BT-Headset-Speaker $NOSUSP'") || { sed -i "s/^MODS=.*/MODS='$a $l $n'/" "$S"; down; return 1; }
+    sed -i "s/^MODS=.*/MODS='$b $a $l $n'/" "$S"
+    pactl set-default-source bt-headset-mic; pactl set-default-sink bt-headset-speaker
+    # PulseAudio itself moves streams that follow the default (e.g. a wake-word listener) onto the new devices
+    log "up for $mac ($(hcitool con | grep -i sco | tr -s ' \t' ' '))"
+}
+down() {
+    [ -f "$S" ] || return 0
+    . "$S"
+    for m in $MODS; do pactl unload-module "$m" 2>/dev/null; done
+    # back to the remembered defaults, else the built-in mic / speaker (never leave a dead default)
+    pactl set-default-source "${PREV_SRC:-$BUILTIN_SRC}" 2>/dev/null || pactl set-default-source "$BUILTIN_SRC"
+    pactl set-default-sink "${PREV_SINK:-$BUILTIN_SINK}" 2>/dev/null || pactl set-default-sink "$BUILTIN_SINK"
+    # q6routing quirk: a 0 can be ignored while a stale path exists, so write 1 then 0
+    for x in "$CAPMIX" "$PLAYMIX"; do mix "$x" 1; mix "$x" 0; done
+    rm -f "$S"; log "down"
+}
+healthy() {   # state file present, card still there in HFP, keepalive loopback still loaded
+    [ -f "$S" ] || return 1; . "$S"; m_=$(echo "$MAC" | tr : _)
+    pactl list cards | grep -A30 "Name: bluez_card.$m_" | grep -q "Active Profile: handsfree_head_unit" || return 1
+    l=${MODS%% *}; pactl list modules short | awk '{print $1}' | grep -qx "$l"
+}
+assert_defaults() {   # callaudiod resets the defaults after a call; put the headset back
+    [ "$(pactl get-default-source)" = bt-headset-mic ] || pactl set-default-source bt-headset-mic
+    [ "$(pactl get-default-sink)" = bt-headset-speaker ] || pactl set-default-sink bt-headset-speaker
+}
+sync() {
+    # during a headset call the voice path owns SLIMBUS_7; bt-hfp-call brings the bridge back afterwards
+    [ -f "$CALLFLAG" ] && return 0
+    c=$(first_card)
+    if [ -z "$c" ]; then [ -f "$S" ] && down; return 0; fi
+    healthy && { assert_defaults; return 0; }
+    f=$ST/lastfail; [ -f "$f" ] && [ $(( $(date +%s) - $(cat "$f") )) -lt 30 ] && return 0
+    up "$(echo "${c#bluez_card.}" | tr _ :)" || date +%s > "$f"
+}
+# one bridge change at a time: the trigger (card events) and bt-hfp-call (call end) can fire together
+case "$1" in up|down|sync) exec 9>"$ST/lock"; flock -w 60 9 ;; esac
+case "$1" in
+    up) up "$2" ;; down) down ;; sync) sync ;;
+    status) if healthy; then echo "UP"; cat "$S"; else echo "DOWN"; fi
+        for p in pcm4c pcm5p; do echo "$p: $(head -1 /proc/asound/card0/$p/sub0/status)"; done
+        hcitool con | grep -i sco ;;
+    *) echo "usage: $0 up [MAC]|down|status|sync"; exit 2 ;;
+esac

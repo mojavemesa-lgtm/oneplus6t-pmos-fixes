@@ -1,0 +1,25 @@
+#!/bin/sh
+# bt-hfp-bridge-trigger (rewritten 2026-10-17): Bluetooth headset audio POLICY, Android-style.
+# A headset is kept in A2DP (music quality) whenever no call is on it: a headset that connects (or that PA
+# restores) in HFP is put back on a2dp_sink, and a leftover HFP bridge is taken down when its headset leaves.
+# The old rule (headset always in HFP so the wake word could hear the headset mic) made music sound awful;
+# the wake word now uses the phone's own mic, like Android. Calls: bt-hfp-call switches to HFP and back.
+export PULSE_CLIENTCONFIG=$HOME/.config/pulse/client-noautospawn.conf
+CALLFLAG=$HOME/.cache/bt-hfp-call.active
+log() { echo "bt-hfp-bridge-trigger: $*" >&2; }
+policy() {
+    [ -f "$CALLFLAG" ] && return 0                 # a headset call is running: hands off
+    "$HOME/.local/bin/bt-hfp-bridge" status 2>/dev/null | grep -q '^UP' && return 0   # an on-demand bridge session
+    "$HOME/.local/bin/bt-hfp-bridge" down          # no-op unless a stale bridge state is left
+    pactl list cards 2>/dev/null | awk '/^Card #/{c=""} /Name: bluez_card\./{c=$2} /^\t\ta2dp_sink: .*available: yes/{a[c]=1} /Active Profile: handsfree_head_unit/{if(c)h[c]=1} END{for(c in h) if(a[c]) print c}' |
+    while read -r c; do pactl set-card-profile "$c" a2dp_sink && log "$c: HFP -> a2dp_sink (no call)"; done
+}
+policy
+pactl subscribe | while read -r line; do
+    case "$line" in
+        *" on card "*)
+            sleep 2
+            while read -r -t 1 _; do :; done   # drain the burst
+            policy ;;
+    esac
+done

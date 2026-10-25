@@ -1,0 +1,42 @@
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 12:00:00 -0700
+Subject: [PATCH 4/6] Bluetooth: use the WCN3990 offload data path for eSCO
+
+Mark WCN3990 with QCA_CAP_HFP_HW_OFFLOAD and, when userspace gives no data path
+(PulseAudio 17 does not), default the enhanced eSCO setup to the controller
+offload path, so SCO goes over SLIMbus instead of HCI (the WCN3990 firmware
+never sends SCO over HCI). The hci_conn.c part is a hack; a proper version
+probably belongs in userspace or a per-controller default. Note: setting
+transport_unit_size to 0 (as Android does) BROKE audio for us; keep 16.
+
+Tested on OnePlus 6T (fajita) with wcn3990-bluetooth-hfp-v4 on 7.1-rc1.
+
+Assisted-by: Claude (Anthropic)
+---
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -2135,6 +2135,8 @@
+ 
+ static const struct qca_device_data qca_soc_data_wcn3990 __maybe_unused = {
+ 	.soc_type = QCA_WCN3990,
++	/* SCO audio goes over SLIMbus to the ADSP, never over HCI */
++	.capabilities = QCA_CAP_HFP_HW_OFFLOAD,
+ 	.vregs = (struct qca_vreg []) {
+ 		{ "vddio", 15000  },
+ 		{ "vddxo", 80000  },
+--- a/net/bluetooth/hci_conn.c
++++ b/net/bluetooth/hci_conn.c
+@@ -295,6 +295,13 @@
+ 
+ 	configure_datapath_sync(hdev, &conn->codec);
+ 
++	/* No data path from userspace: use the controller's offload (non-HCI) path if it has one */
++	if (!conn->codec.data_path && hdev->get_data_path_id) {
++		__u8 dp = 0;
++		if (!hdev->get_data_path_id(hdev, &dp))
++			conn->codec.data_path = dp;
++	}
++
+ 	conn->state = BT_CONNECT;
+ 	conn->out = true;
+ 

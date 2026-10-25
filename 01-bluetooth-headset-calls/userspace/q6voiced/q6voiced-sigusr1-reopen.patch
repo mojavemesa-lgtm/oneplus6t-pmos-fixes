@@ -1,0 +1,39 @@
+--- q6voiced.c.orig	2026-10-17 18:46:32.785211139 -0700
++++ q6voiced-reopen.c	2026-10-17 18:46:51.513258549 -0700
+@@ -18,6 +18,14 @@
+ 	struct pcm *tx, *rx;
+ };
+ 
++#include <signal.h>
++
++/* 2026-10-17 SIGUSR1 = close and reopen the voice PCMs if a call is up.
++ * q6voice picks the AFE ports (earpiece vs Bluetooth SLIMBUS_7) only when the PCMs open, so a
++ * routing change during a call needs a reopen. bt-hfp-call sends the signal after it swaps mixers. */
++static volatile sig_atomic_t reopen_requested;
++static void on_usr1(int sig) { (void)sig; reopen_requested = 1; }
++
+ static void q6voiced_open(struct q6voiced *v)
+ {
+ 	if (v->tx)
+@@ -140,8 +148,19 @@
+ 		return 1;
+ 	}
+ 
+-	// Loop listening for signals being emmitted
+-	while (dbus_connection_read_write(conn, -1)) {
++	signal(SIGUSR1, on_usr1);
++
++	// Loop listening for signals being emmitted (wake every 100 ms to serve a reopen request)
++	while (dbus_connection_read_write(conn, 100)) {
++		if (reopen_requested) {
++			reopen_requested = 0;
++			if (v.tx) {
++				q6voiced_close(&v);
++				q6voiced_open(&v);
++				printf("PCM devices were reopened (routing change).\n");
++			}
++			fflush(stdout);
++		}
+ 		// We need to process all received messages
+ 		while (msg = dbus_connection_pop_message(conn)) {
+ 			handle_signal(&v, msg, &err);

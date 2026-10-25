@@ -1,0 +1,113 @@
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 12:00:00 -0700
+Subject: [PATCH 1/6] slimbus: qcom-ngd-ctrl: remove channels when a stream is disabled
+
+The NGD driver had no .disable_stream. The SLIMbus manager runs on the ADSP and
+only learns about channels through user messages; the core NEXT_DEACTIVATE /
+NEXT_REMOVE sequence is dropped by qcom_slim_ngd_xfer_msg(). So channels were
+never removed, and re-activating the same channel on the next stream often
+left the WCN3990 RX port inactive (PGD_PORT_RX_STATUSN(0) = 0x00): silent SCO
+on roughly 3 of every 4 calls after the first one since boot.
+
+Send SLIM_USR_MC_CHAN_CTRL (remove) + SLIM_USR_MC_RECONFIG_NOW, the same
+messages as downstream slim-msm-ngd.c ngd_allocbw(). After this: 13/13
+downlink and 5/5 uplink streams good (was about 1 in 4). The WCD934x bus
+(built-in mics) still works; the ADSP ACKs the removes there too.
+
+Tested on OnePlus 6T (fajita) with wcn3990-bluetooth-hfp-v4 on 7.1-rc1.
+
+Assisted-by: Claude (Anthropic)
+---
+--- a/drivers/slimbus/qcom-ngd-ctrl.c
++++ b/drivers/slimbus/qcom-ngd-ctrl.c
+@@ -74,6 +74,7 @@
+ #define SLIM_USR_MC_DEFINE_CHAN		0x20
+ #define SLIM_USR_MC_DEF_ACT_CHAN	0x21
+ #define SLIM_USR_MC_CHAN_CTRL		0x23
++#define SLIM_USR_CH_REMOVE		2	/* SLIM_USR_MC_CHAN_CTRL operation */
+ #define SLIM_USR_MC_RECONFIG_NOW	0x24
+ #define SLIM_USR_MC_REQ_BW		0x28
+ #define SLIM_USR_MC_CONNECT_SRC		0x2C
+@@ -1086,6 +1087,74 @@
+ 	return ret;
+ }
+ 
++/*
++ * Remove the stream's channels from the bus schedule. The SLIMbus manager runs on the ADSP and only
++ * hears about channels through these user messages: the core's NEXT_DEACTIVATE/NEXT_REMOVE sequence
++ * is dropped in qcom_slim_ngd_xfer_msg(), so without this the manager kept every channel it had
++ * activated for us. Same message as the downstream (Android) driver's ngd_allocbw().
++ */
++static int qcom_slim_ngd_disable_stream(struct slim_stream_runtime *rt)
++{
++	struct slim_device *sdev = rt->dev;
++	struct slim_controller *ctrl = sdev->ctrl;
++	struct slim_val_inf msg =  {0};
++	u8 wbuf[SLIM_MSGQ_BUF_LEN];
++	u8 rbuf[SLIM_MSGQ_BUF_LEN];
++	struct slim_msg_txn txn = {0,};
++	int i, ret;
++
++	txn.mt = SLIM_MSG_MT_DEST_REFERRED_USER;
++	txn.dt = SLIM_MSG_DEST_LOGICALADDR;
++	txn.la = SLIM_LA_MGR;
++	txn.ec = 0;
++	txn.msg = &msg;
++	txn.msg->num_bytes = 0;
++	txn.msg->wbuf = wbuf;
++	txn.msg->rbuf = rbuf;
++
++	/* only the low 5 bits of the logical address name the client */
++	wbuf[txn.msg->num_bytes++] = SLIM_USR_CH_REMOVE << 6 | (sdev->laddr & 0x1f);
++	ret = slim_alloc_txn_tid(ctrl, &txn);
++	if (ret) {
++		dev_err(&sdev->dev, "Fail to allocate TID\n");
++		return -ENXIO;
++	}
++	wbuf[txn.msg->num_bytes++] = txn.tid;
++	for (i = 0; i < rt->num_ports; i++)
++		wbuf[txn.msg->num_bytes++] = rt->ports[i].ch.id;
++
++	txn.mc = SLIM_USR_MC_CHAN_CTRL;
++	txn.rl = txn.msg->num_bytes + 4;
++	ret = qcom_slim_ngd_xfer_msg_sync(ctrl, &txn);
++	if (ret) {
++		slim_free_txn_tid(ctrl, &txn);
++		dev_err(&sdev->dev, "TX timed out:MC:0x%x,mt:0x%x", txn.mc,
++				txn.mt);
++		return ret;
++	}
++
++	txn.mc = SLIM_USR_MC_RECONFIG_NOW;
++	txn.msg->num_bytes = 2;
++	wbuf[1] = sdev->laddr;
++	txn.rl = txn.msg->num_bytes + 4;
++
++	ret = slim_alloc_txn_tid(ctrl, &txn);
++	if (ret) {
++		dev_err(ctrl->dev, "Fail to allocate TID\n");
++		return ret;
++	}
++
++	wbuf[0] = txn.tid;
++	ret = qcom_slim_ngd_xfer_msg_sync(ctrl, &txn);
++	if (ret) {
++		slim_free_txn_tid(ctrl, &txn);
++		dev_err(&sdev->dev, "TX timed out:MC:0x%x,mt:0x%x", txn.mc,
++				txn.mt);
++	}
++
++	return ret;
++}
++
+ static int qcom_slim_ngd_get_laddr(struct slim_controller *ctrl,
+ 				   struct slim_eaddr *ea, u8 *laddr)
+ {
+@@ -1640,6 +1709,7 @@
+ 	ctrl->ctrl.clkgear = SLIM_MAX_CLK_GEAR;
+ 	ctrl->ctrl.get_laddr = qcom_slim_ngd_get_laddr;
+ 	ctrl->ctrl.enable_stream = qcom_slim_ngd_enable_stream;
++	ctrl->ctrl.disable_stream = qcom_slim_ngd_disable_stream;
+ 	ctrl->ctrl.xfer_msg = qcom_slim_ngd_xfer_msg;
+ 	ctrl->ctrl.wakeup = NULL;
+ 	ctrl->state = QCOM_SLIM_NGD_CTRL_DOWN;

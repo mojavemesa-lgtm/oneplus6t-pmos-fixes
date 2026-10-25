@@ -1,0 +1,27 @@
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 12:00:00 -0700
+Subject: [PATCH 5/6] HACK: slimbus: stream: LPCM data format for WCN3990
+
+WCN3990 needs SLIM_CH_DATA_FMT_LPCM_AUDIO like Android btfm_slim; other
+devices keep NOT_DEFINED. Matched by enumeration address; a real version would
+let the codec driver pass the format in slim_stream_config.
+
+Tested on OnePlus 6T (fajita) with wcn3990-bluetooth-hfp-v4 on 7.1-rc1.
+
+Assisted-by: Claude (Anthropic)
+---
+--- a/drivers/slimbus/stream.c
++++ b/drivers/slimbus/stream.c
+@@ -252,7 +252,11 @@
+ 		port->id = port_id;
+ 		port->ch.prrate = prrate;
+ 		port->ch.id = cfg->chs[i];
+-		port->ch.data_fmt = SLIM_CH_DATA_FMT_NOT_DEFINED;
++		/* HACK: WCN3990 Bluetooth (slim217,220) needs LPCM audio like Android btfm_slim; others keep NOT_DEFINED */
++		if (rt->dev->e_addr.manf_id == 0x217 && rt->dev->e_addr.prod_code == 0x220)
++			port->ch.data_fmt = SLIM_CH_DATA_FMT_LPCM_AUDIO;
++		else
++			port->ch.data_fmt = SLIM_CH_DATA_FMT_NOT_DEFINED;
+ 		port->ch.aux_fmt = SLIM_CH_AUX_FMT_NOT_APPLICABLE;
+ 		port->ch.state = SLIM_CH_STATE_ALLOCATED;
+ 

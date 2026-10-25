@@ -1,0 +1,21 @@
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 12:00:00 -0700
+Subject: [PATCH 6/6] arm64: dts: qcom: sdm845-oneplus-common: add WCN3990 Bluetooth SCO dai-links
+
+Same two backend links as sdm845-shift-axolotl in wcn3990-bluetooth-hfp-v4, so
+SLIMBUS_7_TX/RX work on OnePlus 6/6T.
+
+Tested on OnePlus 6T (fajita) with wcn3990-bluetooth-hfp-v4 on 7.1-rc1.
+
+Assisted-by: Claude (Anthropic)
+---
+--- a/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
+@@ -19,6 +19,7 @@
+ 
+ #include "sdm845.dtsi"
+ #include "sdm845-wcd9340.dtsi"
++#include "sdm845-wcn3990.dtsi"
+ #include "pm8998.dtsi"
+ #include "pmi8998.dtsi"
+ 

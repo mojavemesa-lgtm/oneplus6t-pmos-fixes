@@ -1,0 +1,216 @@
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 12:00:00 -0700
+Subject: [PATCH 2/6] ASoC: codecs: wcn3990: track SCO RX/TX state per channel
+
+SCO RX and TX are separate DAIs but shared one wcn->enabled flag, so the second
+shutdown of a call was skipped ("already shutted down"): the TX SLIMbus
+stream was never disabled or freed and the next call stacked a second stream
+on the same port/channel. Track each channel by its own stream runtime, clean
+up on enable errors, and start the SLIMbus side in hw_params (the order
+Android btfm used). The order change alone did not fix silent calls; that was
+patch 1.
+
+Tested on OnePlus 6T (fajita) with wcn3990-bluetooth-hfp-v4 on 7.1-rc1.
+
+Assisted-by: Claude (Anthropic)
+---
+--- a/sound/soc/codecs/wcn3990.c
++++ b/sound/soc/codecs/wcn3990.c
+@@ -94,6 +94,27 @@
+ 	       port == WCN3990_PGD_PORT_TX2_FM;
+ }
+ 
++/*
++ * SCO RX and SCO TX are separate DAIs but used to share one wcn->enabled flag, so the
++ * second shutdown of a call skipped its channel ("already shutted down"): the TX SLIMbus stream was
++ * never disabled or freed and the next call allocated a second stream on the same port/channel.
++ * Track each channel by its own stream runtime instead. (This alone did not cure the intermittent
++ * silent calls: that was the SLIMbus manager never told to remove the channels at teardown, fixed by
++ * qcom_slim_ngd_disable_stream() in drivers/slimbus/qcom-ngd-ctrl.c.)
++ */
++static bool wcn3990_any_active(struct wcn3990_codec *wcn)
++{
++	struct wcn3990_ch *ch;
++
++	for (ch = wcn->rx_chs; ch->id != BTFM_SLIM_NUM_CODEC_DAIS; ch++)
++		if (ch->dai.sruntime)
++			return true;
++	for (ch = wcn->tx_chs; ch->id != BTFM_SLIM_NUM_CODEC_DAIS; ch++)
++		if (ch->dai.sruntime)
++			return true;
++	return false;
++}
++
+ static int wcn3990_enable_port(struct wcn3990_codec *wcn,
+ 			       u16 port, bool rxport, bool enable)
+ {
+@@ -261,7 +282,7 @@
+ 		ret = wcn3990_enable_port(wcn, channel[i].port, rxport, true);
+ 		if (ret) {
+ 			dev_err(component->dev, "Failed to enable port: %d\n", ret);
+-			return ret;
++			goto err_ports;
+ 		}
+ 		channel->dai.sconfig.chs[i] = channel[i].ch;
+ 		channel->dai.sconfig.port_mask |= BIT(channel[i].port);
+@@ -271,16 +292,28 @@
+ 	ret = slim_stream_prepare(channel->dai.sruntime, &channel->dai.sconfig);
+ 	if (ret) {
+ 		dev_err(component->dev, "Failed to prepare SLIM stream: %d\n", ret);
+-		return ret;
++		goto err_ports;
+ 	}
+ 
+ 	ret = slim_stream_enable(channel->dai.sruntime);
+ 	if (ret) {
+ 		dev_err(component->dev, "Failed to enable SLIM stream: %d\n", ret);
+-		return ret;
++		goto err_unprepare;
+ 	}
+ 
+ 	return 0;
++
++err_unprepare:
++	slim_stream_unprepare(channel->dai.sruntime);
++err_ports:
++	while (i-- > 0)
++		wcn3990_enable_port(wcn, channel[i].port, rxport, false);
++	kfree(channel->dai.sconfig.chs);
++	channel->dai.sconfig.chs = NULL;
++	channel->dai.sconfig.port_mask = 0;
++	slim_stream_free(channel->dai.sruntime);
++	channel->dai.sruntime = NULL;
++	return ret;
+ }
+ 
+ static int wcn3990_disable_channel(struct snd_soc_dai *dai, struct wcn3990_ch *channel,
+@@ -360,7 +393,7 @@
+ 	if (!wcn)
+ 		return;
+ 
+-	if (wcn->enabled) {
++	{
+ 		switch (dai->id) {
+ 		case BTFM_FM_SLIM_TX:
+ 			nchan = 2;
+@@ -396,40 +429,25 @@
+ 			dev_err(component->dev, "ch is invalid!!");
+ 			return;
+ 		}
+-	
+-		wcn3990_disable_channel(dai, ch, rxport, wcn->sample_rate, nchan);
+-		
+-		wcn->enabled = false;
+-		dev_info(component->dev, "WCN3990: shutted down\n");
+-	} else {
+-		dev_info(component->dev, "WCN3990: already shutted down\n");
+-	}
+-};
+ 
+-static int wcn3990_hw_params(struct snd_pcm_substream *substream,
+-			     struct snd_pcm_hw_params *params,
+-			     struct snd_soc_dai *dai)
+-{
+-	struct snd_soc_component *component = dai->component;
+-	struct wcn3990_codec *wcn = snd_soc_component_get_drvdata(component);
+-
+-	dev_info(component->dev, "wcn3990_hw_params\n");
+-	if (!wcn)
+-		return -EINVAL;
+-
+-	wcn->bps = params_width(params);
+-	wcn->sample_rate = params_rate(params);
+-	wcn->direction = substream->stream;
+-	wcn->dai_id = dai->id;
+-	dev_info(component->dev, "dai->name = %s DAI-ID %x rate %d bps %d num_ch %d",
+-		 dai->name, dai->id, params_rate(params), params_width(params),
+-		 params_channels(params));
++		if (!ch->dai.sruntime) {
++			dev_info(component->dev, "WCN3990: %s already shut down\n", ch->name);
++			return;
++		}
++		wcn3990_disable_channel(dai, ch, rxport, wcn->sample_rate, nchan);
+ 
+-	return 0;
++		wcn->enabled = wcn3990_any_active(wcn);
++		dev_info(component->dev, "WCN3990: %s shut down%s\n", ch->name,
++			 wcn->enabled ? "" : " (all ports closed)");
++	}
+ };
+ 
+-static int wcn3990_prepare(struct snd_pcm_substream *substream,
+-			   struct snd_soc_dai *dai)
++/*
++ * Connect this DAI's WCN3990 port(s) and have the SLIMbus manager define and activate the
++ * channel. Does nothing if the DAI's stream is already up.
++ */
++static int wcn3990_start_stream(struct snd_pcm_substream *substream,
++				struct snd_soc_dai *dai)
+ {
+ 	int i, ret = -EINVAL;
+ 	struct snd_soc_component *component = dai->component;
+@@ -439,7 +457,6 @@
+ 	struct regmap *rm = NULL;
+ 	int ver, step;
+ 
+-	dev_info(component->dev, "wcn3990_prepare\n");
+ 	if (!wcn)
+ 		return -EINVAL;
+ 
+@@ -504,13 +521,55 @@
+ 		return ret;
+ 	}
+ 
++	if (ch->dai.sruntime) {
++		dev_info(component->dev, "WCN3990: %s already enabled\n", ch->name);
++		return 0;
++	}
++
+ 	ret = wcn3990_enable_channel(dai, ch, rxport, wcn->sample_rate, nchan);
+ 
+ 	if (ret == -EISCONN) {
+ 		dev_err(component->dev, "channel opened without closing, returning success");
+ 		ret = 0;
+ 	}
+-	return 0;
++	return ret;
++}
++
++static int wcn3990_hw_params(struct snd_pcm_substream *substream,
++			     struct snd_pcm_hw_params *params,
++			     struct snd_soc_dai *dai)
++{
++	struct snd_soc_component *component = dai->component;
++	struct wcn3990_codec *wcn = snd_soc_component_get_drvdata(component);
++
++	dev_info(component->dev, "wcn3990_hw_params\n");
++	if (!wcn)
++		return -EINVAL;
++
++	wcn->bps = params_width(params);
++	wcn->sample_rate = params_rate(params);
++	wcn->direction = substream->stream;
++	wcn->dai_id = dai->id;
++	dev_info(component->dev, "dai->name = %s DAI-ID %x rate %d bps %d num_ch %d",
++		 dai->name, dai->id, params_rate(params), params_width(params),
++		 params_channels(params));
++
++	/*
++	 * Start the SLIMbus side now, before the CPU DAI's .prepare starts the AFE port: the order
++	 * Android's btfm driver had (4.9 soc_pcm_prepare ran codec DAIs before the CPU DAI). The order
++	 * alone did not cure the silent headset streams (RX port never active, PGD_PORT_RX_STATUSN(0)
++	 * stayed 0); that was the stale channel fixed by qcom_slim_ngd_disable_stream().
++	 */
++	return wcn3990_start_stream(substream, dai);
++};
++
++static int wcn3990_prepare(struct snd_pcm_substream *substream,
++			   struct snd_soc_dai *dai)
++{
++	dev_info(dai->component->dev, "wcn3990_prepare\n");
++
++	/* Normally already started in wcn3990_hw_params() */
++	return wcn3990_start_stream(substream, dai);
+ };
+ 
+ static int wcn3990_set_channel_map(struct snd_soc_dai *dai,
