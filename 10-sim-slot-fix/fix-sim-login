@@ -1,0 +1,6 @@
+#!/bin/sh
+# Login autostart: fix_sim.sh restarts ModemManager; GNOME Calls (started earlier at
+# login) does not reconnect to a restarted ModemManager and shows "no modem", so
+# calls don't ring. Restart Calls after the modem is back.
+sudo /usr/local/bin/fix_sim.sh
+systemctl --user restart 'app-org.gnome.Calls\x2ddaemon@autostart.service'

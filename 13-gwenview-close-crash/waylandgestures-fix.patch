@@ -1,0 +1,33 @@
+--- a/lib/waylandgestures/waylandgestures.h
++++ b/lib/waylandgestures/waylandgestures.h
+@@ -47,7 +47,7 @@
+ 
+ private:
+     PointerGestures *m_pointerGestures;
+-    PinchGesture *m_pinchGesture;
++    PinchGesture *m_pinchGesture = nullptr;
+     double m_startZoom;
+     double m_zoomModifier;
+ };
+--- a/lib/waylandgestures/waylandgestures.cpp
++++ b/lib/waylandgestures/waylandgestures.cpp
+@@ -82,13 +82,17 @@
+     m_zoomModifier = 1.0;
+     m_pointerGestures = new PointerGestures();
+     connect(m_pointerGestures, &PointerGestures::activeChanged, this, [this]() {
+-        init();
++        // Local fix (upstream MR !376): don't re-init when the global goes away
++        if (m_pointerGestures->isActive()) {
++            init();
++        }
+     });
+ }
+ 
+ WaylandGestures::~WaylandGestures()
+ {
+-    if (m_pointerGestures) {
++    // Local fix: release() on an unbound extension dereferences a null proxy
++    if (m_pointerGestures && m_pointerGestures->isActive()) {
+         m_pointerGestures->release();
+     }
+     if (m_pinchGesture) {

@@ -1,0 +1,9 @@
+[Unit]
+Description=Restart mobile data when it is "connected" but dead
+After=NetworkManager.service ModemManager.service
+[Service]
+ExecStart=/usr/local/bin/cell-data-watch
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=multi-user.target

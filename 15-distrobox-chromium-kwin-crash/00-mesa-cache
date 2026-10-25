@@ -1,0 +1,3 @@
+# Install inside the distrobox container as /etc/chromium.d/00-mesa-cache
+# Gives the container its own Mesa shader cache so it cannot corrupt the host's.
+export MESA_SHADER_CACHE_DIR=$HOME/.cache/distrobox-mesa

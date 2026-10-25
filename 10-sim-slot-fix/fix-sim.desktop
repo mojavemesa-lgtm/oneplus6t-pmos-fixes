@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Exec=sh -c "$HOME/.local/bin/fix-sim-login"
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+Name=OnePlus 6T SIM Fix
+Comment=Automatically restarts modem and switches SIM slots on login

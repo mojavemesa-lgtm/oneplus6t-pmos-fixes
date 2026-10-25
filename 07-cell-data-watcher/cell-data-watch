@@ -1,0 +1,27 @@
+#!/bin/sh
+# cell-data-watch (2026-10-21): if mobile data says "connected" but nothing gets through
+# for ~90 s, do what you would do by hand: turn the Verizon connection off and on.
+# Why: 2026-10-21 20:32 Verizon dropped the data session (emm-invalid-state); NetworkManager
+# kept "connected" on a deleted interface and data stayed dead ~55 min until a manual toggle.
+# Skips: data switched off on purpose, Wi-Fi carrying the traffic, a voice call in progress.
+CONN=Verizon   # EDIT: the name of your NetworkManager mobile-data connection (nmcli c show)
+fails=0; last_fix=0
+log() { logger -t cell-data-watch "$*"; }
+while :; do
+  sleep 30
+  nmcli -t -f NAME c show --active | grep -qx "$CONN" || { fails=0; continue; }   # data off on purpose
+  dev=$(ip route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+  case "$dev" in wlan*) fails=0; continue;; esac                                   # Wi-Fi in use
+  if [ -n "$dev" ] && { ping -c1 -W4 -I "$dev" 9.9.9.9 >/dev/null 2>&1 || ping -c1 -W4 -I "$dev" 1.1.1.1 >/dev/null 2>&1; }; then
+    fails=0; continue
+  fi
+  fails=$((fails+1)); [ $fails -lt 3 ] && continue
+  if mmcli -m any --voice-list-calls 2>/dev/null | grep -qE "\((active|held|dialing|ringing)"; then
+    log "data dead but a call is in progress; waiting"; continue
+  fi
+  now=$(date +%s); [ $((now-last_fix)) -lt 300 ] && continue                       # at most every 5 min
+  log "data dead for ~90 s on dev='${dev:-none}'; restarting $CONN"
+  nmcli c down "$CONN" >/dev/null 2>&1; sleep 3; nmcli c up "$CONN" >/dev/null 2>&1
+  log "restart done: $(ip route show default | head -1)"
+  last_fix=$now; fails=0
+done

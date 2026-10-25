@@ -1,0 +1,19 @@
+# Local copy of /usr/lib/systemd/user/sm.puri.Chatty-daemon.service for Plasma (2026-09-25).
+# Stock unit requires gnome-session-initialized.target (never exists under Plasma), so after a
+# crash D-Bus activation fails with "dependency" and Chatty never comes back.
+# Undo: rm this file + plasma-workspace.target.wants/sm.puri.Chatty-daemon.service
+#       + ~/.config/autostart/sm.puri.Chatty-daemon.desktop; systemctl --user daemon-reload
+[Unit]
+Description=SMS/MMS, Matrix and XMPP chat application (daemon mode)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+BusName=sm.puri.Chatty
+ExecStart=/usr/bin/chatty --gapplication-service
+Type=dbus
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=plasma-workspace.target

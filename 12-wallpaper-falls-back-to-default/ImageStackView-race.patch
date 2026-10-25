@@ -1,0 +1,11 @@
+--- a/usr/share/plasma/wallpapers/org.kde.image/contents/ui/ImageStackView.qml
++++ b/usr/share/plasma/wallpapers/org.kde.image/contents/ui/ImageStackView.qml
+@@ -129,7 +129,7 @@
+ 
+         wallpaperInterface.loading = false;
+ 
+-        if (pendingImage.status !== Image.Ready) {
++        if (pendingImage.status === Image.Error) {
+             mediaProxy.useSingleImageDefaults();
+         }
+ 

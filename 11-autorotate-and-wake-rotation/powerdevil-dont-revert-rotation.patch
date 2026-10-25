@@ -1,0 +1,68 @@
+From 8bdc8f3782750ab365d48f5606944dec1adf11de Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 07:06:27 -0700
+Subject: [PATCH] kwinbrightness: don't revert compositor changes when applying
+ brightness
+
+m_config can lag behind KWin's own changes (auto-rotation on wake), and
+libkscreen sends every property that differs from the live state, so a
+brightness restore right after wake-up put the screen back to portrait.
+Fetch the live config and only carry over brightness and dimming.
+
+Assisted-by: Claude (Anthropic)
+---
+ daemon/controllers/kwinbrightness.cpp | 24 ++++++++++++++++++++++--
+ daemon/controllers/kwinbrightness.h   |  2 +-
+ 2 files changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/daemon/controllers/kwinbrightness.cpp b/daemon/controllers/kwinbrightness.cpp
+index deb42d8..fbf5130 100644
+--- a/daemon/controllers/kwinbrightness.cpp
++++ b/daemon/controllers/kwinbrightness.cpp
+@@ -113,8 +113,28 @@ void KWinDisplayDetector::setConfig()
+     for (const auto &[output, display] : m_displays) {
+         display->applyPendingBrightness();
+     }
+-    m_setConfigOp = new KScreen::SetConfigOperation(m_config);
+-    connect(m_setConfigOp, &KScreen::SetConfigOperation::finished, this, &KWinDisplayDetector::setConfigDone);
++    // m_config is only updated asynchronously, and not at all while one of our own
++    // operations is pending, so it can be behind on changes KWin made by itself
++    // (e.g. auto-rotation on wake-up). libkscreen sends every property that differs
++    // from the compositor's current state, so applying m_config directly would revert
++    // those changes. Fetch the current config and only carry over brightness and dimming.
++    const auto getOp = new KScreen::GetConfigOperation(KScreen::GetConfigOperation::Option::NoOptions, this);
++    m_setConfigOp = getOp;
++    connect(getOp, &KScreen::GetConfigOperation::finished, this, [this](KScreen::ConfigOperation *op) {
++        KScreen::ConfigPtr config = m_config;
++        if (!op->hasError()) {
++            config = static_cast<KScreen::GetConfigOperation *>(op)->config();
++            for (const auto &output : config->outputs()) {
++                const KScreen::OutputPtr desired = m_config->output(output->id());
++                if (desired && m_displays.contains(desired.get())) {
++                    output->setBrightness(desired->brightness());
++                    output->setDimming(desired->dimming());
++                }
++            }
++        }
++        m_setConfigOp = new KScreen::SetConfigOperation(config);
++        connect(m_setConfigOp, &KScreen::ConfigOperation::finished, this, &KWinDisplayDetector::setConfigDone);
++    });
+ }
+ 
+ void KWinDisplayDetector::setConfigDone()
+diff --git a/daemon/controllers/kwinbrightness.h b/daemon/controllers/kwinbrightness.h
+index 0beb054..6e158a2 100644
+--- a/daemon/controllers/kwinbrightness.h
++++ b/daemon/controllers/kwinbrightness.h
+@@ -63,7 +63,7 @@ private:
+     void setConfigDone();
+ 
+     KScreen::ConfigPtr m_config;
+-    KScreen::SetConfigOperation *m_setConfigOp = nullptr;
++    KScreen::ConfigOperation *m_setConfigOp = nullptr;
+     std::unordered_map<KScreen::Output *, std::unique_ptr<KWinDisplayBrightness>> m_displays;
+     QList<DisplayBrightness *> m_displayList;
+     QTimer m_setConfigTimer;
+-- 
+2.54.0
+
