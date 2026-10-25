@@ -1,0 +1,96 @@
+From e7e47be594a4d52b4f3ecfe79c981cbaf3a18f5b Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:32:37 -0700
+Subject: [PATCH 11/16] arm64: dts: qcom: sdm845-oneplus: Enable the PMI8998
+ VBUS output, dual-role port
+
+The Type-C connector added for the OnePlus 6/6T is sink-only because
+the PMI8998 VBUS output had no driver. With the regulator available:
+
+ - add the usb-vbus-regulator node at 0x1100 to pmi8998.dtsi and enable
+   it for the OnePlus 6/6T with a 250 mA - 1 A limit (the downstream
+   driver allowed up to 1.5 A for OTG),
+ - make the connector a dual-role port preferring sink
+   (try-power-role = "sink"): a PC or charger (Rp) makes the phone a sink
+   and USB device, only a sink partner (Rd, e.g. an OTG adapter) makes it
+   source 5 V and become USB host. Add a 5 V / 1 A source PDO, and mark
+   the sink PDO as dual-role capable.
+
+Tested on a OnePlus 6T (fajita): the phone switches automatically
+between USB device (PC port, power bank, chargers) and USB host (SD card
+reader through an OTG adapter). 5 V is only on the connector in host
+mode. A PC port is limited to 500 mA.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ arch/arm64/boot/dts/qcom/pmi8998.dtsi         |  6 +++++
+ .../boot/dts/qcom/sdm845-oneplus-common.dtsi  | 24 +++++++++++++++----
+ 2 files changed, 25 insertions(+), 5 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/pmi8998.dtsi b/arch/arm64/boot/dts/qcom/pmi8998.dtsi
+index bc30702f1..d3c93cfb4 100644
+--- a/arch/arm64/boot/dts/qcom/pmi8998.dtsi
++++ b/arch/arm64/boot/dts/qcom/pmi8998.dtsi
+@@ -30,6 +30,12 @@ pmi8998_charger: charger@1000 {
+ 			status = "disabled";
+ 		};
+ 
++		pmi8998_vbus: usb-vbus-regulator@1100 {
++			compatible = "qcom,pmi8998-vbus-reg";
++			reg = <0x1100>;
++			status = "disabled";
++		};
++
+ 		pmi8998_typec: typec@1300 {
+ 			compatible = "qcom,pmi8998-typec";
+ 			reg = <0x1300>,
+diff --git a/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi b/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
+index e465d5442..e8a7b81ba 100644
+--- a/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
+@@ -929,6 +929,13 @@ &pmi8998_charger {
+ 	status = "okay";
+ };
+ 
++&pmi8998_vbus {
++	/* OTG boost, 5 V out to a USB device; OnePlus downstream allowed 1.5 A */
++	regulator-min-microamp = <250000>;
++	regulator-max-microamp = <1000000>;
++	status = "okay";
++};
++
+ &pmi8998_typec {
+ 	status = "okay";
+ 
+@@ -938,16 +945,23 @@ connector {
+ 		compatible = "usb-c-connector";
+ 
+ 		/*
+-		 * Sink only for now, as the PMI8998 charger doesn't provide
+-		 * the VBUS output yet. Switch to the dual power role with
+-		 * source PDOs, try-power-role and vbus-supply once it is
+-		 * supported.
++		 * Dual role, preferring sink: a PC or charger (Rp) makes the
++		 * phone a sink and USB device; only a sink partner (Rd, e.g.
++		 * an OTG adapter) makes it source 5 V and become USB host.
+ 		 */
+-		power-role = "sink";
++		power-role = "dual";
++		try-power-role = "sink";
+ 		data-role = "dual";
+ 		self-powered;
+ 
++		vbus-supply = <&pmi8998_vbus>;
++
++		source-pdos = <PDO_FIXED(5000, 1000,
++					 PDO_FIXED_DUAL_ROLE |
++					 PDO_FIXED_USB_COMM |
++					 PDO_FIXED_DATA_SWAP)>;
+ 		sink-pdos = <PDO_FIXED(5000, 3000,
++				       PDO_FIXED_DUAL_ROLE |
+ 				       PDO_FIXED_USB_COMM |
+ 				       PDO_FIXED_DATA_SWAP)>;
+ 		op-sink-microwatt = <15000000>;
+-- 
+2.43.0
+

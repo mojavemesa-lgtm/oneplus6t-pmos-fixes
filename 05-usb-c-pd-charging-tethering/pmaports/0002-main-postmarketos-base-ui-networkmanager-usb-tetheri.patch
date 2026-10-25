@@ -1,0 +1,54 @@
+From c96472ba06953ffa4a5f3453084eb54984702228 Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:33:59 -0700
+Subject: [PATCH 2/2] main/postmarketos-base-ui-networkmanager-usb-tethering:
+ only cycle the UDC if it exists
+
+On devices whose USB port can switch between device and host mode
+(OTG), the dispatcher script can run while the port is in host mode.
+reactivate_gadget() then writes "" to g1/UDC, which in host mode removes
+the pending bind the kernel keeps for the gadget (the gadget driver
+stays registered in the UDC core and is bound again when a UDC shows up
+after the port returns to device mode). The following write of the old
+UDC name fails ("couldn't find an available UDC or it's busy"), and the
+UDC stays empty: no USB networking after the next device-mode session.
+
+Only cycle the UDC when /sys/class/udc/$udc exists, i.e. the controller
+is in device mode. Otherwise leave it alone; the kernel rebinds it by
+itself.
+
+Tested on a OnePlus 6T (postmarketOS, kernel 7.1-rc1 with the
+dual-role Type-C patches): with the port in host mode, running the
+script as an "up" event keeps UDC set; after host to device the gadget
+is configured again and the host reaches 172.16.42.1.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ .../50-tethering.sh                                   | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/main/postmarketos-base-ui-networkmanager-usb-tethering/50-tethering.sh b/main/postmarketos-base-ui-networkmanager-usb-tethering/50-tethering.sh
+index 1bdc1de..05a225e 100644
+--- a/main/postmarketos-base-ui-networkmanager-usb-tethering/50-tethering.sh
++++ b/main/postmarketos-base-ui-networkmanager-usb-tethering/50-tethering.sh
+@@ -44,9 +44,14 @@ reactivate_gadget() {
+ 
+ 	# Reactivate gadget
+ 	udc=$(cat /config/usb_gadget/g1/UDC)
+-	echo "" > /config/usb_gadget/g1/UDC
+-	sleep 1
+-	echo "$udc" > /config/usb_gadget/g1/UDC
++	# Only cycle the UDC if it exists. While the port is in USB host mode (OTG)
++	# the kernel keeps the gadget pending and binds it when the controller
++	# returns to device mode; writing "" now would drop that pending bind.
++	if [ -n "$udc" ] && [ -e "/sys/class/udc/$udc" ]; then
++		echo "" > /config/usb_gadget/g1/UDC
++		sleep 1
++		echo "$udc" > /config/usb_gadget/g1/UDC
++	fi
+ 
+ 	logger -t nm-tethering "gadget reactivated"
+ 
+-- 
+2.43.0
+

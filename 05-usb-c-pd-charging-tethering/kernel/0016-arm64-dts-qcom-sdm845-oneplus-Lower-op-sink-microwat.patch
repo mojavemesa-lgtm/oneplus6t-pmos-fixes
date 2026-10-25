@@ -1,0 +1,45 @@
+From bb4e99cd1838dcf64d4ba50fb12cd101036ed015 Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:32:38 -0700
+Subject: [PATCH 16/16] arm64: dts: qcom: sdm845-oneplus: Lower
+ op-sink-microwatt to 5 W
+
+The connector's op-sink-microwatt of 15 W is higher than what the 5 V
+sink PDO can supply. When the phone requests the first (5 V) fixed PDO
+of a source offering 5 V / 2.4 A, tcpm then sets the Capability Mismatch
+bit in the request, since 15 W is more than 5 V * 2.4 A.
+
+An Anker iQ3 PD charger (5 V 2.4 A / 9 V 3 A / 15 V 3 A / 20 V 2.25 A)
+reacts to that by sending a Hard Reset about 450 ms after PS_RDY, then
+comes back, accepts again, and resets again: a storm of about 20 s until
+the contract finally sticks. This happens on every replug of the charger.
+
+Set the operating sink power to 5 W, which is what the phone wants from
+a 5 V contract. The request no longer carries the mismatch bit.
+
+Tested on a OnePlus 6T (fajita) with the same Anker PD charger: with 15 W
+the storm was reproduced after replugs; with 5 W there were 0 hard
+resets and a clean 5 V / 2.4 A PD 3.0 contract. Only this one PD
+charger model was tested, and few replugs.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi b/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
+index e9a68e4dc..f4f1216bc 100644
+--- a/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
+@@ -966,7 +966,7 @@ PDO_FIXED_USB_COMM |
+ 				       PDO_FIXED_DUAL_ROLE |
+ 				       PDO_FIXED_USB_COMM |
+ 				       PDO_FIXED_DATA_SWAP)>;
+-		op-sink-microwatt = <15000000>;
++		op-sink-microwatt = <5000000>;
+ 
+ 		ports {
+ 			#address-cells = <1>;
+-- 
+2.43.0
+

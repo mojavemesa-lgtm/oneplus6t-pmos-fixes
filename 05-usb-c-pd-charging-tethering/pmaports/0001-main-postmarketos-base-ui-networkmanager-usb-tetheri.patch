@@ -1,0 +1,52 @@
+From ed4e2d926eb8a3222aabc12a447fa5a6310a049e Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:33:59 -0700
+Subject: [PATCH 1/2] main/postmarketos-base-ui-networkmanager-usb-tethering:
+ do not rm -rf the configfs mount point
+
+reactivate_gadget() mounts configfs on /config, cycles the UDC, then runs
+"umount /config; rm -rf /config". configfs is a singleton superblock and
+the dispatcher script runs many times at once (up, dhcp, reapply events:
+about ten runs within seconds after usb0 comes up). The /config mounts
+stack, so a umount can leave another instance's mount in place. The
+following "rm -rf /config" then walks the live configfs and unlinks the
+gadget's function link (configs/c.1/ncm.usb0).
+
+The already bound gadget keeps working, so nothing is noticed until the
+UDC is unbound once (for example after a USB host session on a phone
+with a dual-role port). The next bind fails with
+
+  Config c/1 of g1 needs at least one function
+
+and USB networking is gone until the next boot.
+
+Use rmdir, which only removes the empty mount point and fails harmlessly
+when something is still mounted there.
+
+Seen and tested on a OnePlus 6T (postmarketOS,
+postmarketos-base-ui-networkmanager-usb-tethering-51-r0): with the change
+the function link survives the parallel runs and the gadget rebinds.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ .../50-tethering.sh                                           | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/main/postmarketos-base-ui-networkmanager-usb-tethering/50-tethering.sh b/main/postmarketos-base-ui-networkmanager-usb-tethering/50-tethering.sh
+index 63f44ff..1bdc1de 100644
+--- a/main/postmarketos-base-ui-networkmanager-usb-tethering/50-tethering.sh
++++ b/main/postmarketos-base-ui-networkmanager-usb-tethering/50-tethering.sh
+@@ -52,7 +52,9 @@ reactivate_gadget() {
+ 
+ 	# Unmount configFS
+ 	umount /config
+-	rm -rf /config
++	# Not rm -rf: if the umount did not remove the last configfs mount, this
++	# would walk the live configfs and delete the gadget's function symlinks.
++	rmdir /config 2>/dev/null || true
+ 
+ 	logger -t nm-tethering "configFS unmounted"
+ }
+-- 
+2.43.0
+

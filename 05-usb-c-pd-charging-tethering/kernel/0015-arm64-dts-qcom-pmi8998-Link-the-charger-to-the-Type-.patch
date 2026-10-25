@@ -1,0 +1,37 @@
+From 625a09a1804870ae6ab911a03b37a80f5b76d11a Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:32:37 -0700
+Subject: [PATCH 15/16] arm64: dts: qcom: pmi8998: Link the charger to the
+ Type-C port as supplier
+
+Add power-supplies = <&pmi8998_typec> to the OnePlus 6/6T charger node.
+The tcpm power supply registered by the Type-C port driver uses this
+node as its firmware node, so the power supply core links the charger to
+it as a supplier. The qcom_smbx charger then follows the Type-C Rp
+current or the negotiated USB PD contract for its input current limit.
+
+Tested on a OnePlus 6T (fajita): with the link the charger input limit
+follows the PD contract of an Anker PD charger; without it the driver
+behaves as before.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi b/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
+index e8a7b81ba..e9a68e4dc 100644
+--- a/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
+@@ -926,6 +926,8 @@ pinconf {
+ };
+ 
+ &pmi8998_charger {
++	/* input current limit follows the Type-C Rp / USB PD contract */
++	power-supplies = <&pmi8998_typec>;
+ 	status = "okay";
+ };
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,58 @@
+From 12fcb11ea1e215f1e08980fce92e687f2689092d Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:31:16 -0700
+Subject: [PATCH 08/16] regulator: qcom_usb_vbus: PMI8998: do not boost while
+ VBUS is present
+
+Never fight another source: if the USBIN plug-in status shows that VBUS
+is already up (PC, wall charger, power bank), refuse to enable the
+boost and return -EBUSY. Without the check a role swap racing with a
+real source could switch on the boost against it.
+
+Tested on a OnePlus 6T (fajita) with the rest of this series: a PC port,
+a power bank and a PD charger attach as sink and the boost stays off.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ drivers/regulator/qcom_usb_vbus-regulator.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/drivers/regulator/qcom_usb_vbus-regulator.c b/drivers/regulator/qcom_usb_vbus-regulator.c
+index 6f57102c1..ca93a34f4 100644
+--- a/drivers/regulator/qcom_usb_vbus-regulator.c
++++ b/drivers/regulator/qcom_usb_vbus-regulator.c
+@@ -26,6 +26,8 @@
+ /* PMI8998: the USBIN peripheral sits 0x200 above the OTG peripheral */
+ #define PMI8998_USBIN_CMD_IL		0x240
+ #define PMI8998_USBIN_SUSPEND		BIT(0)
++#define PMI8998_USBIN_INT_RT_STS	0x210
++#define PMI8998_USBIN_PLUGIN_RT_STS	BIT(4)
+ 
+ static const unsigned int curr_table[] = {
+ 	500000, 1000000, 1500000, 2000000, 2500000, 3000000,
+@@ -60,8 +62,22 @@ static void qcom_usb_vbus_force_off(struct qcom_usb_vbus *vbus)
+ static int pmi8998_vbus_enable(struct regulator_dev *rdev)
+ {
+ 	struct qcom_usb_vbus *vbus = rdev_get_drvdata(rdev);
++	unsigned int stat;
+ 	int ret;
+ 
++	/*
++	 * Never fight another source: if VBUS is already up (PC, charger,
++	 * power bank) do not switch the boost on.
++	 */
++	ret = regmap_read(vbus->regmap, vbus->base + PMI8998_USBIN_INT_RT_STS,
++			  &stat);
++	if (ret)
++		return ret;
++	if (stat & PMI8998_USBIN_PLUGIN_RT_STS) {
++		dev_warn(&rdev->dev, "VBUS already present, not sourcing\n");
++		return -EBUSY;
++	}
++
+ 	ret = regmap_update_bits(vbus->regmap, vbus->base + OTG_ENG_OTG_CFG,
+ 				 ENG_BUCKBOOST_HALT1_8_MODE,
+ 				 ENG_BUCKBOOST_HALT1_8_MODE);
+-- 
+2.43.0
+

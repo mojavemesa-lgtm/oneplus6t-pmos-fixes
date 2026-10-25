@@ -1,0 +1,63 @@
+From 98b42babd75d8555d7220100f9cd29b7656397a7 Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:32:37 -0700
+Subject: [PATCH 12/16] power: supply: qcom_smbx: Enable the periodic AICL
+ rerun on SMB2
+
+Mainline leaves USBIN_AICL_PERIODIC_RERUN_EN (USBIN_AICL_OPTIONS_CFG,
+0x1380 bit 4) off, and the AICL rerun time (0x1661) at its default. The
+downstream OnePlus driver enables the periodic rerun with the shortest
+interval.
+
+Without it the hardware AICL (automatic input current limit) only ever
+steps the input limit down when VBUS dips (a weak power bank, a long
+cable) and never tries again. The limit ratchets down to a few tens of
+milliamps and charging stops altogether; a power bank then switches
+itself off because the load is too small.
+
+Enable the periodic rerun and set the rerun time field to 0 (shortest),
+as downstream does.
+
+Tested on a OnePlus 6T (fajita) with an Anker power bank: 0x1380 reads
+back 0x57 after boot, and the phone kept charging at 1.05 - 1.1 A for
+more than 10 minutes instead of ratcheting down.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ drivers/power/supply/qcom_smbx.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/drivers/power/supply/qcom_smbx.c b/drivers/power/supply/qcom_smbx.c
+index 01f98287c..e8a66ac35 100644
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -134,6 +134,9 @@ enum smb_generation {
+ #define USBIN_HV_COLLAPSE_RESPONSE_BIT			BIT(1)
+ #define USBIN_LV_COLLAPSE_RESPONSE_BIT			BIT(0)
+ 
++#define AICL_RERUN_TIME_CFG				0x661
++#define AICL_RERUN_TIME_MASK				GENMASK(1, 0)
++
+ // FIXME: drop these and their programming, no need to set min to 4.3v
+ #define USBIN_5V_AICL_THRESHOLD_CFG			0x381
+ #define USBIN_5V_AICL_THRESHOLD_CFG_MASK		GENMASK(2, 0)
+@@ -828,6 +831,16 @@ static const struct smb_init_register smb2_init_seq[] = {
+ 	  .val = 0 },
+ 	/* Configure VBUS for software control */
+ 	{ .addr = OTG_CFG, .mask = OTG_EN_SRC_CFG_BIT, .val = 0 },
++	/*
++	 * Re-run AICL periodically (shortest interval), as the downstream
++	 * driver does. Without it the hardware AICL only ever steps the input
++	 * limit down on VBUS dips (weak power banks, long cables) and never
++	 * recovers, until charging stops altogether.
++	 */
++	{ .addr = USBIN_AICL_OPTIONS_CFG,
++	  .mask = USBIN_AICL_PERIODIC_RERUN_EN_BIT,
++	  .val = USBIN_AICL_PERIODIC_RERUN_EN_BIT },
++	{ .addr = AICL_RERUN_TIME_CFG, .mask = AICL_RERUN_TIME_MASK, .val = 0 },
+ 	/*
+ 	 * Use VBAT to determine the recharge threshold when battery is full
+ 	 * rather than the state of charge.
+-- 
+2.43.0
+

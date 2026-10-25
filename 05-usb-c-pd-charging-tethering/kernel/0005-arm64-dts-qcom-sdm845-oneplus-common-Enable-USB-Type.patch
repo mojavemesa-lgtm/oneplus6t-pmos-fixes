@@ -1,0 +1,126 @@
+From c40f978948fef0807de6cef253b0d0c03b98656e Mon Sep 17 00:00:00 2001
+From: David Heidelberg <david@ixit.cz>
+Date: Sat, 26 Sep 2026 14:40:30 +0200
+Subject: [PATCH 05/16] arm64: dts: qcom: sdm845-oneplus-common: Enable USB
+ Type-C port controller
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Enable the PMI8998 Type-C port controller with a USB-C connector
+description for the OnePlus 6 (enchilada) and OnePlus 6T (fajita),
+which share the same USB-C hardware via this common dtsi.
+
+The connector is configured as:
+  - Sink-only power role with a 5V/3A sink PDO
+  - Dual-role data with USB role switching
+
+The VBUS output of the charger is not supported yet, so the port can't
+act as a power source. Describe it as sink-only until VBUS support lands,
+USB host mode is still reachable through a PD data role swap.
+
+Only the HS endpoint (port@0) is wired to the DWC3 controller since
+these devices use USB 2.0 only — the QMP USB3+DP combo PHY is not
+connected in the OnePlus 6/6T hardware design. Consequently, no
+DisplayPort Alt Mode is advertised and no SS orientation switching is
+needed.
+
+Switch the DWC3 controller from peripheral-only to OTG mode with
+usb-role-switch to allow the TCPM framework to control USB host/device
+role based on CC pin detection.
+
+Backported from the RFC series "Qualcomm Type-C support for 1st generation"
+(PATCH RFC 11/12, v1, 2026-09-26, Message-Id
+<20260926-typec-v1-11-31adc19f32c6@ixit.cz>) to sdm845-7.1-rc1-r0; only the
+context was adjusted so that it applies. Tested on a OnePlus 6T.
+
+Assisted-by: LLM
+Signed-off-by: David Heidelberg <david@ixit.cz>
+---
+ .../boot/dts/qcom/sdm845-oneplus-common.dtsi  | 48 ++++++++++++++++++-
+ 1 file changed, 46 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi b/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
+index 948a0dd18..e465d5442 100644
+--- a/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sdm845-oneplus-common.dtsi
+@@ -13,6 +13,7 @@
+ #include <dt-bindings/leds/common.h>
+ #include <dt-bindings/media/video-interfaces.h>
+ #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
++#include <dt-bindings/usb/pd.h>
+ #include <dt-bindings/sound/qcom,q6afe.h>
+ #include <dt-bindings/sound/qcom,q6asm.h>
+ #include <dt-bindings/sound/qcom,q6voice.h>
+@@ -928,6 +929,43 @@ &pmi8998_charger {
+ 	status = "okay";
+ };
+ 
++&pmi8998_typec {
++	status = "okay";
++
++	vdd-pdphy-supply = <&vreg_l24a_3p075>;
++
++	connector {
++		compatible = "usb-c-connector";
++
++		/*
++		 * Sink only for now, as the PMI8998 charger doesn't provide
++		 * the VBUS output yet. Switch to the dual power role with
++		 * source PDOs, try-power-role and vbus-supply once it is
++		 * supported.
++		 */
++		power-role = "sink";
++		data-role = "dual";
++		self-powered;
++
++		sink-pdos = <PDO_FIXED(5000, 3000,
++				       PDO_FIXED_USB_COMM |
++				       PDO_FIXED_DATA_SWAP)>;
++		op-sink-microwatt = <15000000>;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++				pmi8998_hs_in: endpoint {
++					remote-endpoint = <&usb_1_dwc3_hs>;
++				};
++			};
++		};
++	};
++};
++
+ &pmi8998_flash {
+ 	status = "okay";
+ 
+@@ -1238,9 +1276,11 @@ &usb_1 {
+ 
+ &usb_1_dwc3 {
+ 	/*
+-	 * We don't have the capability to switch modes yet.
++	 * The USB-C role is managed by the pmi8998 Type-C port controller
++	 * via usb-role-switch.
+ 	 */
+-	dr_mode = "peripheral";
++	dr_mode = "otg";
++	usb-role-switch;
+ 
+ 	/* fastest mode for USB 2 */
+ 	maximum-speed = "high-speed";
+@@ -1250,6 +1290,10 @@ &usb_1_dwc3 {
+ 	phy-names = "usb2-phy";
+ };
+ 
++&usb_1_dwc3_hs {
++	remote-endpoint = <&pmi8998_hs_in>;
++};
++
+ &usb_1_hsphy {
+ 	status = "okay";
+ 
+-- 
+2.43.0
+

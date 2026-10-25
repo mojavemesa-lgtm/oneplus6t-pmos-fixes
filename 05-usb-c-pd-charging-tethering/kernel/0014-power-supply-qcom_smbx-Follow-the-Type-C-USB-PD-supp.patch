@@ -1,0 +1,178 @@
+From eb0158357639e15842c73b288717f0201986b19d Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:32:37 -0700
+Subject: [PATCH 14/16] power: supply: qcom_smbx: Follow the Type-C / USB PD
+ supplier's current
+
+The SMB2 input current limit was only derived from the APSD charger
+type (SDP 500 mA, CDP 1.5 A, DCP 1.5 A). A phone on a USB-C PD charger
+or on a Type-C source advertising Rp 3 A therefore charged at 1.5 A at
+most, and a PD contract was ignored. The downstream OnePlus driver
+instead takes the limit from the Type-C / PD state: with a PD contract
+the input current limit is the contract's current; a Type-C source with
+Rp 3 A may be drawn 3 A from.
+
+Use the existing power-supply core supplier link: the "power-supplies"
+DT property can point the charger at the tcpm power supply, which
+reports ONLINE, USB_TYPE and CURRENT_MAX (the PD contract current, or
+the Rp current when there is no contract), and calls
+power_supply_changed() when they change. The charger now
+
+ - re-runs its status work from .external_power_changed, so a new
+   contract or Rp change is applied at once,
+ - with a PD / PPS supplier online sets the limit to the contract
+   current, capped at 3 A (the hardware maximum),
+ - otherwise keeps the APSD rules (SDP 500 mA, CDP 1.5 A), and for a DCP
+   uses 3 A if the supplier's Rp current is 3 A or more, else the battery
+   maximum as before.
+
+Without a supplier linked nothing changes. The status work is
+initialised before the power supply is registered, since the supplier
+callback can queue it from then on.
+
+Tested on a OnePlus 6T (fajita) with an Anker PD charger (5 V 2.4 A /
+9 V 3 A / 15 V 3 A / 20 V 2.25 A): tcpm reports a PD 5 V contract of
+2.4 A and the charger follows it, ICL register 0x1370 reads 0x60 (2.4 A
+in 25 mA steps); the measured input stays near 1 A with the thin USB-C
+cables available here, which is the hardware AICL stepping down for the
+cable. A thick C-C cable to confirm more than 1 A was not tried.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ drivers/power/supply/qcom_smbx.c | 78 +++++++++++++++++++++++++-------
+ 1 file changed, 61 insertions(+), 17 deletions(-)
+
+diff --git a/drivers/power/supply/qcom_smbx.c b/drivers/power/supply/qcom_smbx.c
+index daf6127f2..d3c1130b9 100644
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -202,6 +202,9 @@ enum smb_generation {
+ #define CDP_CURRENT_UA					1500000
+ #define DCP_CURRENT_UA					1500000
+ #define CURRENT_MAX_UA					DCP_CURRENT_UA
++/* Type-C Rp "3 A" source, and the highest input limit the hardware accepts */
++#define TYPEC_3A_UA					3000000
++#define USBIN_ICL_MAX_UA				3000000
+ 
+ /* pmi8998 registers represent current in increments of 1/40th of an amp */
+ #define CURRENT_SCALE_FACTOR				25000
+@@ -446,6 +449,9 @@ static int smb_set_current_limit(struct smb_chip *chip, unsigned int val)
+ static void smb_status_change_work(struct work_struct *work)
+ {
+ 	unsigned int charger_type, current_ua;
++	union power_supply_propval sup_val;
++	int sup_ua;
++	bool sup_pd;
+ 	int usb_online = 0;
+ 	int count, rc;
+ 	struct smb_chip *chip;
+@@ -487,17 +493,46 @@ static void smb_status_change_work(struct work_struct *work)
+ 	}
+ 	chip->apsd_wait = 0;
+ 
+-	switch (charger_type) {
+-	case POWER_SUPPLY_USB_TYPE_CDP:
+-		current_ua = CDP_CURRENT_UA;
+-		break;
+-	case POWER_SUPPLY_USB_TYPE_DCP:
+-		current_ua = chip->batt_info->constant_charge_current_max_ua;
+-		break;
+-	case POWER_SUPPLY_USB_TYPE_SDP:
+-	default:
+-		current_ua = SDP_CURRENT_UA;
+-		break;
++	/*
++	 * A Type-C / USB PD port controller (tcpm) can be linked as our
++	 * supplier through the "power-supplies" DT property. It reports the
++	 * Rp advertisement or the negotiated PD contract current.
++	 */
++	sup_ua = 0;
++	sup_pd = false;
++	if (!power_supply_get_property_from_supplier(chip->chg_psy,
++						     POWER_SUPPLY_PROP_ONLINE,
++						     &sup_val) && sup_val.intval) {
++		if (!power_supply_get_property_from_supplier(chip->chg_psy,
++							     POWER_SUPPLY_PROP_CURRENT_MAX,
++							     &sup_val))
++			sup_ua = sup_val.intval;
++		if (!power_supply_get_property_from_supplier(chip->chg_psy,
++							     POWER_SUPPLY_PROP_USB_TYPE,
++							     &sup_val))
++			sup_pd = sup_val.intval != POWER_SUPPLY_USB_TYPE_C &&
++				 sup_val.intval != POWER_SUPPLY_USB_TYPE_UNKNOWN;
++	}
++
++	if (sup_pd && sup_ua > 0) {
++		/* PD contract: draw what the source promised (like the OnePlus driver) */
++		current_ua = min(sup_ua, USBIN_ICL_MAX_UA);
++	} else {
++		switch (charger_type) {
++		case POWER_SUPPLY_USB_TYPE_CDP:
++			current_ua = CDP_CURRENT_UA;
++			break;
++		case POWER_SUPPLY_USB_TYPE_DCP:
++			current_ua = chip->batt_info->constant_charge_current_max_ua;
++			/* A DCP behind an Rp 3 A Type-C source may use 3 A */
++			if (sup_ua >= TYPEC_3A_UA)
++				current_ua = TYPEC_3A_UA;
++			break;
++		case POWER_SUPPLY_USB_TYPE_SDP:
++		default:
++			current_ua = SDP_CURRENT_UA;
++			break;
++		}
+ 	}
+ 
+ 	smb_set_current_limit(chip, current_ua);
+@@ -728,6 +763,14 @@ static irqreturn_t smb_handle_wdog_bark(int irq, void *data)
+ 	return IRQ_HANDLED;
+ }
+ 
++/* The Type-C / PD supplier changed its advertised current: re-apply the limit */
++static void smb_external_power_changed(struct power_supply *psy)
++{
++	struct smb_chip *chip = power_supply_get_drvdata(psy);
++
++	mod_delayed_work(system_wq, &chip->status_change_work, 0);
++}
++
+ static const struct power_supply_desc smb_psy_desc = {
+ 	.name = "SMB2_charger",
+ 	.type = POWER_SUPPLY_TYPE_USB,
+@@ -738,6 +781,7 @@ static const struct power_supply_desc smb_psy_desc = {
+ 	.properties = smb_properties,
+ 	.num_properties = ARRAY_SIZE(smb_properties),
+ 	.get_property = smb_get_property,
++	.external_power_changed = smb_external_power_changed,
+ 	.set_property = smb_set_property,
+ 	.property_is_writeable = smb_property_is_writable,
+ };
+@@ -1074,6 +1118,12 @@ static int smb_probe(struct platform_device *pdev)
+ 	if (!desc->name)
+ 		return -ENOMEM;
+ 
++	rc = devm_delayed_work_autocancel(chip->dev, &chip->status_change_work,
++					  smb_status_change_work);
++	if (rc)
++		return dev_err_probe(chip->dev, rc,
++				     "Failed to init status change work\n");
++
+ 	chip->chg_psy =
+ 		devm_power_supply_register(chip->dev, desc, &supply_config);
+ 	if (IS_ERR(chip->chg_psy))
+@@ -1087,12 +1137,6 @@ static int smb_probe(struct platform_device *pdev)
+ 	if (chip->batt_info->constant_charge_current_max_ua == -EINVAL)
+ 		chip->batt_info->constant_charge_current_max_ua = DCP_CURRENT_UA;
+ 
+-	rc = devm_delayed_work_autocancel(chip->dev, &chip->status_change_work,
+-					  smb_status_change_work);
+-	if (rc)
+-		return dev_err_probe(chip->dev, rc,
+-				     "Failed to init status change work\n");
+-
+ 	rc = (chip->batt_info->voltage_max_design_uv - 3487500) / 7500 + 1;
+ 	rc = regmap_update_bits(chip->regmap, chip->base + FLOAT_VOLTAGE_CFG,
+ 				FLOAT_VOLTAGE_SETTING_MASK, rc);
+-- 
+2.43.0
+

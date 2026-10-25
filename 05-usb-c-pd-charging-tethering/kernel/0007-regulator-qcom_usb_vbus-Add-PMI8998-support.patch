@@ -1,0 +1,238 @@
+From ee03467aacb88d385b430d8572ed74f5832c66e4 Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 00:31:16 -0700
+Subject: [PATCH 07/16] regulator: qcom_usb_vbus: Add PMI8998 support
+
+Add the VBUS output of the PMI8998 charger (SMB2), used to power a USB
+device when the Type-C port is in host mode, e.g. through an OTG
+adapter. It differs from the PM8150B block in several ways, following
+the downstream smb-lib.c smblib_vbus_regulator_enable():
+
+ - the OTG current limit has 250 mA steps from 250 mA to 2 A,
+ - the buck-boost 1-in-8 mode is halted (ENG_OTG_CFG bit 0) while
+   boosting,
+ - USBIN is suspended while boosting so that the charger does not try
+   to draw from its own boost output.
+
+The block is moved to per-device data (regulator_desc and a small
+private struct picked with of_device_get_match_data()) instead of
+patching a single static descriptor in probe.
+
+The PMIC keeps the boost enabled over a warm reboot, which would leave
+5 V on a connector the next kernel believes is idle (or fight a
+charger). So the output is forced off at probe if it was left on, and
+in the shutdown handler.
+
+Tested on a OnePlus 6T (fajita): with an SD card reader behind an OTG
+adapter the port switches to host mode, sources 5 V and the reader
+enumerates. 5 V is only present on the connector in host mode.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ drivers/regulator/qcom_usb_vbus-regulator.c | 138 ++++++++++++++++++--
+ 1 file changed, 130 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/regulator/qcom_usb_vbus-regulator.c b/drivers/regulator/qcom_usb_vbus-regulator.c
+index cd94ed676..6f57102c1 100644
+--- a/drivers/regulator/qcom_usb_vbus-regulator.c
++++ b/drivers/regulator/qcom_usb_vbus-regulator.c
+@@ -8,6 +8,7 @@
+ #include <linux/err.h>
+ #include <linux/kernel.h>
+ #include <linux/of.h>
++#include <linux/of_device.h>
+ #include <linux/platform_device.h>
+ #include <linux/regulator/driver.h>
+ #include <linux/regulator/of_regulator.h>
+@@ -19,11 +20,101 @@
+ #define OTG_CURRENT_LIMIT_MASK		GENMASK(2, 0)
+ #define OTG_CFG				0x53
+ #define OTG_EN_SRC_CFG			BIT(1)
++#define OTG_ENG_OTG_CFG			0xc0
++#define ENG_BUCKBOOST_HALT1_8_MODE	BIT(0)
++
++/* PMI8998: the USBIN peripheral sits 0x200 above the OTG peripheral */
++#define PMI8998_USBIN_CMD_IL		0x240
++#define PMI8998_USBIN_SUSPEND		BIT(0)
+ 
+ static const unsigned int curr_table[] = {
+ 	500000, 1000000, 1500000, 2000000, 2500000, 3000000,
+ };
+ 
++/* PMI8998 OTG_CURRENT_LIMIT_CFG: 250 mA steps from 250 mA (downstream smb2 otg_cl) */
++static const unsigned int pmi8998_curr_table[] = {
++	250000, 500000, 750000, 1000000, 1250000, 1500000, 1750000, 2000000,
++};
++
++struct qcom_usb_vbus {
++	struct regmap *regmap;
++	u32 base;
++	bool usbin_suspend;	/* PMI8998: USBIN is suspended while boosting */
++};
++
++static void qcom_usb_vbus_force_off(struct qcom_usb_vbus *vbus)
++{
++	regmap_update_bits(vbus->regmap, vbus->base + CMD_OTG, OTG_EN, 0);
++	if (vbus->usbin_suspend)
++		regmap_update_bits(vbus->regmap,
++				   vbus->base + PMI8998_USBIN_CMD_IL,
++				   PMI8998_USBIN_SUSPEND, 0);
++}
++
++/*
++ * PMI8998 (SMB2) enable/disable as done by the downstream smb-lib.c
++ * smblib_vbus_regulator_enable(): halt the buck-boost 1-in-8 mode while
++ * boosting and suspend USBIN so the charger does not try to draw from its
++ * own boost output (downstream votes the USB ICL to 0 for that).
++ */
++static int pmi8998_vbus_enable(struct regulator_dev *rdev)
++{
++	struct qcom_usb_vbus *vbus = rdev_get_drvdata(rdev);
++	int ret;
++
++	ret = regmap_update_bits(vbus->regmap, vbus->base + OTG_ENG_OTG_CFG,
++				 ENG_BUCKBOOST_HALT1_8_MODE,
++				 ENG_BUCKBOOST_HALT1_8_MODE);
++	if (ret)
++		return ret;
++
++	ret = regmap_update_bits(vbus->regmap, vbus->base + PMI8998_USBIN_CMD_IL,
++				 PMI8998_USBIN_SUSPEND, PMI8998_USBIN_SUSPEND);
++	if (ret)
++		return ret;
++
++	ret = regulator_enable_regmap(rdev);
++	if (ret)
++		regmap_update_bits(vbus->regmap,
++				   vbus->base + PMI8998_USBIN_CMD_IL,
++				   PMI8998_USBIN_SUSPEND, 0);
++	return ret;
++}
++
++static int pmi8998_vbus_disable(struct regulator_dev *rdev)
++{
++	struct qcom_usb_vbus *vbus = rdev_get_drvdata(rdev);
++	int ret;
++
++	ret = regulator_disable_regmap(rdev);
++	if (ret)
++		return ret;
++
++	regmap_update_bits(vbus->regmap, vbus->base + OTG_ENG_OTG_CFG,
++			   ENG_BUCKBOOST_HALT1_8_MODE, 0);
++
++	return regmap_update_bits(vbus->regmap,
++				  vbus->base + PMI8998_USBIN_CMD_IL,
++				  PMI8998_USBIN_SUSPEND, 0);
++}
++
++static const struct regulator_ops pmi8998_usb_vbus_reg_ops = {
++	.enable = pmi8998_vbus_enable,
++	.disable = pmi8998_vbus_disable,
++	.is_enabled = regulator_is_enabled_regmap,
++	.get_current_limit = regulator_get_current_limit_regmap,
++	.set_current_limit = regulator_set_current_limit_regmap,
++};
++
++static struct regulator_desc pmi8998_usb_vbus_rdesc = {
++	.name = "usb_vbus",
++	.ops = &pmi8998_usb_vbus_reg_ops,
++	.owner = THIS_MODULE,
++	.type = REGULATOR_VOLTAGE,
++	.curr_table = pmi8998_curr_table,
++	.n_current_limits = ARRAY_SIZE(pmi8998_curr_table),
++};
++
+ static const struct regulator_ops qcom_usb_vbus_reg_ops = {
+ 	.enable = regulator_enable_regmap,
+ 	.disable = regulator_disable_regmap,
+@@ -48,9 +139,14 @@ static int qcom_usb_vbus_regulator_probe(struct platform_device *pdev)
+ 	struct regmap *regmap;
+ 	struct regulator_config config = { };
+ 	struct regulator_init_data *init_data;
++	struct regulator_desc *rdesc;
++	struct qcom_usb_vbus *vbus;
++	unsigned int val;
+ 	int ret;
+ 	u32 base;
+ 
++	rdesc = (struct regulator_desc *)of_device_get_match_data(dev);
++
+ 	ret = of_property_read_u32(dev->of_node, "reg", &base);
+ 	if (ret < 0) {
+ 		dev_err(dev, "no base address found\n");
+@@ -63,21 +159,36 @@ static int qcom_usb_vbus_regulator_probe(struct platform_device *pdev)
+ 		return -ENOENT;
+ 	}
+ 
+-	init_data = of_get_regulator_init_data(dev, dev->of_node,
+-					       &qcom_usb_vbus_rdesc);
++	vbus = devm_kzalloc(dev, sizeof(*vbus), GFP_KERNEL);
++	if (!vbus)
++		return -ENOMEM;
++	vbus->regmap = regmap;
++	vbus->base = base;
++	vbus->usbin_suspend = rdesc == &pmi8998_usb_vbus_rdesc;
++	platform_set_drvdata(pdev, vbus);
++
++	/* Never start with the port sourcing 5 V (e.g. left on over a warm reboot) */
++	ret = regmap_read(regmap, base + CMD_OTG, &val);
++	if (!ret && (val & OTG_EN)) {
++		dev_warn(dev, "VBUS output was left on, switching it off\n");
++		qcom_usb_vbus_force_off(vbus);
++	}
++
++	init_data = of_get_regulator_init_data(dev, dev->of_node, rdesc);
+ 	if (!init_data)
+ 		return -ENOMEM;
+ 
+-	qcom_usb_vbus_rdesc.enable_reg = base + CMD_OTG;
+-	qcom_usb_vbus_rdesc.enable_mask = OTG_EN;
+-	qcom_usb_vbus_rdesc.csel_reg = base + OTG_CURRENT_LIMIT_CFG;
+-	qcom_usb_vbus_rdesc.csel_mask = OTG_CURRENT_LIMIT_MASK;
++	rdesc->enable_reg = base + CMD_OTG;
++	rdesc->enable_mask = OTG_EN;
++	rdesc->csel_reg = base + OTG_CURRENT_LIMIT_CFG;
++	rdesc->csel_mask = OTG_CURRENT_LIMIT_MASK;
+ 	config.dev = dev;
+ 	config.init_data = init_data;
+ 	config.of_node = dev->of_node;
+ 	config.regmap = regmap;
++	config.driver_data = vbus;
+ 
+-	rdev = devm_regulator_register(dev, &qcom_usb_vbus_rdesc, &config);
++	rdev = devm_regulator_register(dev, rdesc, &config);
+ 	if (IS_ERR(rdev)) {
+ 		ret = PTR_ERR(rdev);
+ 		dev_err(dev, "not able to register vbus reg %d\n", ret);
+@@ -90,8 +201,18 @@ static int qcom_usb_vbus_regulator_probe(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
++/* Switch the 5 V output off on reboot/poweroff, the PMIC keeps it over a warm reboot */
++static void qcom_usb_vbus_regulator_shutdown(struct platform_device *pdev)
++{
++	struct qcom_usb_vbus *vbus = platform_get_drvdata(pdev);
++
++	if (vbus)
++		qcom_usb_vbus_force_off(vbus);
++}
++
+ static const struct of_device_id qcom_usb_vbus_regulator_match[] = {
+-	{ .compatible = "qcom,pm8150b-vbus-reg" },
++	{ .compatible = "qcom,pm8150b-vbus-reg", .data = &qcom_usb_vbus_rdesc },
++	{ .compatible = "qcom,pmi8998-vbus-reg", .data = &pmi8998_usb_vbus_rdesc },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, qcom_usb_vbus_regulator_match);
+@@ -103,6 +224,7 @@ static struct platform_driver qcom_usb_vbus_regulator_driver = {
+ 		.of_match_table = qcom_usb_vbus_regulator_match,
+ 	},
+ 	.probe		= qcom_usb_vbus_regulator_probe,
++	.shutdown	= qcom_usb_vbus_regulator_shutdown,
+ };
+ module_platform_driver(qcom_usb_vbus_regulator_driver);
+ 
+-- 
+2.43.0
+
