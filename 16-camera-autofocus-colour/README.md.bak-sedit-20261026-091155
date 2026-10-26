@@ -1,0 +1,100 @@
+# 16 - Camera: autofocus, colours, rear camera checker pattern
+
+**Status: rear cameras work (autofocus, decent colour). Tested 2026-10-09, kernel 7.1.0-rc1-sdm845,
+postmarketOS v26.06. The front camera is still grey on our phone (see "Front camera" below).**
+
+This is not our own fix. All the real work is **lolren's** camera stack
+([lolren/oneplus6t-pmos-fixes](https://github.com/lolren/oneplus6t-pmos-fixes) and
+[lolren/advanced-snapshot](https://github.com/lolren/advanced-snapshot)). Their repo does a lot of things
+and is hard to follow, so this page is the short path we took to get just the camera part, plus one
+setting change that our phone needed.
+
+## Symptom
+With stock postmarketOS the main camera is washed out and blurry, it never focuses (the lens motor is
+never moved), colours look bad, the second rear camera shows a checker pattern, and the front camera
+is grey / nearly black-and-white.
+
+## Root cause
+- postmarketOS uses libcamera's "simple" pipeline with a software ISP. It has **no autofocus**, so the
+  focus motor (LC898217) just sits at one end. The motor itself is fine.
+- There is **no tuning file for the main sensor (IMX519)** and no gain helper for it, so exposure and
+  colour are guessed.
+- The front sensor (IMX371) is read out in a full-resolution "Quad Bayer" mode that the software ISP
+  can't turn into proper colour. That needs a kernel driver change (a binned mode), see below.
+
+lolren's patched libcamera adds contrast autofocus, manual focus, gain helpers for all three sensors
+and tuning files with colour correction. Their Advanced Snapshot app uses it (tap to focus, manual
+focus slider).
+
+## Install (rear cameras, no kernel change)
+On the phone. First save the stock packages so you can go back:
+```
+mkdir -p ~/camera-backup && cd ~/camera-backup
+apk fetch libcamera libcamera-ipa pipewire-spa-libcamera
+```
+Download lolren's camera release `runtime-r44-camera-r35` and check it:
+```
+mkdir -p ~/camstage && cd ~/camstage
+for f in SHA256SUMS oneplus6t-camera-r35-r36-aarch64.tar.gz; do
+  wget https://github.com/lolren/oneplus6t-pmos-fixes/releases/download/runtime-r44-camera-r35/$f
+done
+sha256sum -c SHA256SUMS --ignore-missing      # must say OK
+tar xzf oneplus6t-camera-r35-r36-aarch64.tar.gz
+```
+Install only the camera packages from `stage/candidate`:
+```
+cd ~/camstage/stage/candidate
+sudo apk add --allow-untrusted --force-overwrite \
+  aarch64/libcamera-99990.7.2-r35.apk aarch64/libcamera-ipa-99990.7.2-r35.apk \
+  aarch64/pipewire-spa-libcamera-1.6.8-r8.apk \
+  aarch64/advanced-snapshot-0.1.0-r36.apk noarch/advanced-snapshot-lang-0.1.0-r36.apk
+```
+(`--force-overwrite` is needed because their pipewire plugin replaces one file owned by `pipewire-libs`.
+`--allow-untrusted` because the packages are signed with lolren's own key, not postmarketOS's; the
+sha256 check above is what tells you the files are the ones they published.)
+
+Then widen the autofocus range (next section) and open **Advanced Snapshot**. Restart the session
+(or reboot) if the camera app was already open.
+
+What we skipped on purpose:
+- lolren's `install-camera-generation` script: in our try it pinned a helper package name that no
+  longer downloads, so it stopped. Installing the packages by hand works.
+- lolren's helper package (`oneplus6t-pmos-fixes-...-r44.apk`): it also installs an audio routing
+  service, a mobile data watchdog and PipeWire config. Those clashed with our call audio fixes
+  (01, 02, 07), so we left it out. The camera works without it.
+
+## The one change we made: autofocus range
+lolren's tuning lets autofocus search lens positions 400 to 800. On our phone the far-focus position
+(landscapes, anything past a few metres) is about 200, so distant things never got sharp. We checked
+this by moving the lens by hand while watching the preview: 0 is blurry (past infinity), about 200 is
+sharp far away, 800 is already close-up. `widen-af-range.sh` copies lolren's tuning files for the two
+rear cameras into `/etc/libcamera/ipa/simple/` (which overrides `/usr/share`) with the range set to
+150 to 900:
+```
+sudo sh widen-af-range.sh
+```
+If your phone focuses fine far away with the stock 400..800, skip this. Units differ a little between
+phones, so if distant things are still soft, lower 150 further.
+
+## Front camera
+Still grey on our phone. lolren has three kernel patches for it (IMX371 2304x1728 binned mode, a
+device-tree link frequency, and a gain range fix: `patches/` in their repo, `0001`-`0003`). We have
+built a kernel with them but have **not flashed and tested it yet**, so we can't vouch for it. Kernel
+changes can stop the phone booting: read [docs/RECOVERY.md](../docs/RECOVERY.md) first.
+
+## Undo
+```
+sudo sh widen-af-range.sh --undo
+sudo apk del advanced-snapshot advanced-snapshot-lang
+sudo apk add --allow-untrusted ~/camera-backup/libcamera-*.apk ~/camera-backup/libcamera-ipa-*.apk \
+  ~/camera-backup/pipewire-spa-libcamera-*.apk
+sudo apk fix pipewire-libs
+```
+
+## Known limits
+- Colour is a measured correction from lolren, not a factory calibration. Good, not Android-good.
+- Autofocus is contrast-based in software: it hunts a little and is slower than on Android.
+- lolren's libcamera has version `99990.x` so normal upgrades don't replace it. But a PipeWire upgrade
+  can put the stock `libspa-libcamera.so` back; if the camera vanishes from apps after an upgrade,
+  reinstall the `pipewire-spa-libcamera` package above.
+- Other camera apps (Plasma Camera, Megapixels) can show a picture but don't have the focus controls.

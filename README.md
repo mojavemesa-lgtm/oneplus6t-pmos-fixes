@@ -43,8 +43,7 @@ flashing anything.
 - [13 Gwenview crash on close](13-gwenview-close-crash/): patch (also proposed to KDE), works, needs a package rebuild.
 - [14 Session killed by the lock screen](14-session-crash-lockscreen-usr1/): preload shim, a bandaid, works.
 - [15 Distrobox Chromium crashes KWin](15-distrobox-chromium-kwin-crash/): one config line, works.
-
-Camera: not covered here. Please see lolren's separate project at https://github.com/lolren/oneplus6t-pmos-fixes .
+- [16 Camera: autofocus and colours](16-camera-autofocus-colour/): short path to install lolren's camera stack (rear cameras), plus a wider autofocus range. Rear cameras work; front camera not fixed yet.
 
 ## Other documents
 
