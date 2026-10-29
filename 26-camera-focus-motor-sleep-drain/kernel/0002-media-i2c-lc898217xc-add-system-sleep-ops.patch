@@ -1,0 +1,41 @@
+From 59bc677fe106f7ea01b9e79507b7330582abae17 Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 11:00:22 -0700
+Subject: [PATCH 2/2] media: i2c: lc898217xc: add system sleep ops
+
+With only runtime PM callbacks the PM core treats the device as having
+no PM callbacks, enables smart suspend, and device_resume_noirq() sets
+it RPM_ACTIVE without calling runtime_resume. The rails stay off while
+the status says active and the next runtime suspend disables them a
+second time ("unbalanced disables for main_cam_vaf").
+
+Use pm_runtime_force_suspend/resume for system sleep.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/media/i2c/lc898217xc.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/drivers/media/i2c/lc898217xc.c b/drivers/media/i2c/lc898217xc.c
+index f134e9944..2a16d713b 100644
+--- a/drivers/media/i2c/lc898217xc.c
++++ b/drivers/media/i2c/lc898217xc.c
+@@ -328,6 +328,15 @@ static const struct of_device_id lc898217xc_of_table[] = {
+ MODULE_DEVICE_TABLE(of, lc898217xc_of_table);
+ 
+ static const struct dev_pm_ops lc898217xc_pm_ops = {
++	/*
++	 * Without system sleep callbacks the PM core treats this device as
++	 * having none and marks it RPM_ACTIVE in noirq resume when its sensor
++	 * must resume, without calling runtime_resume. The rails then stay off
++	 * while the status says active, and the next runtime suspend disables
++	 * them twice.
++	 */
++	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
++				pm_runtime_force_resume)
+ 	SET_RUNTIME_PM_OPS(lc898217xc_runtime_suspend,
+ 			   lc898217xc_runtime_resume, NULL)
+ };
+-- 
+2.43.0
+

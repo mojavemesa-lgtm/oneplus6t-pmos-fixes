@@ -36,6 +36,7 @@ Second warning: with a stock `qbootctl`, switching to boot slot b can leave the 
 The folder numbers never change; the list is ordered by how much each fix improves daily use.
 
 - [18 Deep sleep and battery](18-deep-sleep-kernel/): the phone actually sleeps (about 26 mA asleep unplugged in our tests) instead of draining. Eight kernel patches plus a ModemManager patch.
+- [26 Camera focus motors drain the battery in sleep](26-camera-focus-motor-sleep-drain/): two kernel patches for the `lc898217xc` driver; sleep current about 25 mA instead of 55 to 64 mA on top of 18. New (2026-10-29), module-only rebuild; a WirePlumber workaround for people who can't rebuild.
 - [02 VoLTE chipmunk audio](02-volte-chipmunk-fix/): sped-up voice on wideband calls. Works; no root needed.
 - [17 Microphone records silence](17-microphone-silence/): one kernel patch for the capture path on WCN/WCD934x.
 - [08 Texts lost with two SMS apps](08-two-sms-apps-lose-texts/): works; pick one app.

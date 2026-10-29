@@ -1,0 +1,167 @@
+From 51e3131da648a4e060e0a1f9f9aaedc8ebe51499 Mon Sep 17 00:00:00 2001
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 10:46:49 -0700
+Subject: [PATCH 1/2] media: i2c: lc898217xc: power follows the linked sensor,
+ not open handles
+
+libcamera (wireplumber camera monitor) keeps every subdev open, which kept
+both VCMs powered 24/7: ~30 mA on the OnePlus 6T, doubling the deep-sleep
+floor (~55-64 mA -> ~25 mA). Add a runtime-PM device link from the sensor
+whose lens-focus points at us; cache focus writes while off and re-apply
+on resume. Falls back to the old open/close behaviour without a sensor.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/media/i2c/lc898217xc.c | 63 ++++++++++++++++++++++++++++++++--
+ 1 file changed, 61 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/media/i2c/lc898217xc.c b/drivers/media/i2c/lc898217xc.c
+index 89bb5c11d..f134e9944 100644
+--- a/drivers/media/i2c/lc898217xc.c
++++ b/drivers/media/i2c/lc898217xc.c
+@@ -4,6 +4,7 @@
+ #include <linux/delay.h>
+ #include <linux/i2c.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
+ #include <linux/regulator/consumer.h>
+@@ -32,6 +33,9 @@ struct lc898217xc {
+ 	struct v4l2_ctrl_handler ctrls;
+ 	struct v4l2_subdev sd;
+ 	struct regmap *regmap;
++	/* camera sensor whose "lens-focus" points at us; we are powered while it is */
++	struct device_link *sensor_link;
++	bool powered;
+ };
+ 
+ static inline struct lc898217xc *sd_to_lc898217xc(struct v4l2_subdev *subdev)
+@@ -73,6 +77,9 @@ static int __maybe_unused lc898217xc_runtime_suspend(struct device *dev)
+ 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+ 	struct lc898217xc *lc898217xc = sd_to_lc898217xc(sd);
+ 
++	mutex_lock(lc898217xc->ctrls.lock);
++	lc898217xc->powered = false;
++	mutex_unlock(lc898217xc->ctrls.lock);
+ 	lc898217xc_power_off(lc898217xc);
+ 	return 0;
+ }
+@@ -89,7 +96,11 @@ static int __maybe_unused lc898217xc_runtime_resume(struct device *dev)
+ 		return ret;
+ 	}
+ 
+-	__v4l2_ctrl_handler_setup(&lc898217xc->ctrls);
++	/* re-apply the cached focus position, it was not written while off */
++	mutex_lock(lc898217xc->ctrls.lock);
++	lc898217xc->powered = true;
++	ret = __v4l2_ctrl_handler_setup(&lc898217xc->ctrls);
++	mutex_unlock(lc898217xc->ctrls.lock);
+ 
+ 	return ret;
+ }
+@@ -99,6 +110,10 @@ static int lc898217xc_set_ctrl(struct v4l2_ctrl *ctrl)
+ 	struct lc898217xc *lc898217xc = container_of(ctrl->handler,
+ 						     struct lc898217xc, ctrls);
+ 
++	/* while off the value is only cached; runtime_resume writes it */
++	if (!lc898217xc->powered)
++		return 0;
++
+ 	if (ctrl->id == V4L2_CID_FOCUS_ABSOLUTE)
+ 		return lc898217xc_set_dac(lc898217xc, ctrl->val);
+ 
+@@ -109,14 +124,29 @@ static const struct v4l2_ctrl_ops lc898217xc_ctrl_ops = {
+ 	.s_ctrl = lc898217xc_set_ctrl,
+ };
+ 
++/*
++ * Power follows the sensor, not open file handles: libcamera (e.g. the
++ * wireplumber camera monitor) keeps every subdev of the graph open all the
++ * time, which kept the VCM powered 24/7 (~15 mA each, phone asleep or not).
++ * A runtime-PM device link makes the sensor (consumer) resume us (supplier)
++ * whenever it is powered for streaming. Without a linked sensor fall back to
++ * the old behaviour: powered while the subdev node is open.
++ */
+ static int lc898217xc_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+ {
++	struct lc898217xc *lc898217xc = sd_to_lc898217xc(sd);
++
++	if (lc898217xc->sensor_link)
++		return 0;
+ 	return pm_runtime_resume_and_get(sd->dev);
+ }
+ 
+ static int lc898217xc_close(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
+ {
+-	pm_runtime_put_autosuspend(sd->dev);
++	struct lc898217xc *lc898217xc = sd_to_lc898217xc(sd);
++
++	if (!lc898217xc->sensor_link)
++		pm_runtime_put_autosuspend(sd->dev);
+ 
+ 	return 0;
+ }
+@@ -126,6 +156,29 @@ static const struct v4l2_subdev_internal_ops lc898217xc_int_ops = {
+ 	.close = lc898217xc_close,
+ };
+ 
++static void lc898217xc_link_sensor(struct lc898217xc *lc898217xc, struct device *dev)
++{
++	struct device_node *np, *lens;
++	struct i2c_client *sensor;
++
++	for_each_node_with_property(np, "lens-focus") {
++		lens = of_parse_phandle(np, "lens-focus", 0);
++		of_node_put(lens);
++		if (lens != dev->of_node)
++			continue;
++		sensor = of_find_i2c_device_by_node(np);
++		of_node_put(np);
++		if (!sensor)
++			break;
++		lc898217xc->sensor_link = device_link_add(&sensor->dev, dev,
++				DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME);
++		put_device(&sensor->dev);
++		if (lc898217xc->sensor_link)
++			dev_info(dev, "power follows sensor %s\n", dev_name(&sensor->dev));
++		break;
++	}
++}
++
+ static const struct v4l2_subdev_core_ops lc898217xc_core_ops = {
+ 	.log_status = v4l2_ctrl_subdev_log_status,
+ };
+@@ -209,9 +262,11 @@ static int lc898217xc_probe(struct i2c_client *client)
+ 	 * Enable runtime PM. As the device has been powered manually, mark it
+ 	 * as active, and increase the usage count without resuming the device.
+ 	 */
++	lc898217xc->powered = true;
+ 	pm_runtime_set_active(dev);
+ 	pm_runtime_get_noresume(dev);
+ 	pm_runtime_enable(dev);
++	lc898217xc_link_sensor(lc898217xc, dev);
+ 
+ 	ret = v4l2_async_register_subdev(&lc898217xc->sd);
+ 	if (ret < 0) {
+@@ -232,6 +287,8 @@ static int lc898217xc_probe(struct i2c_client *client)
+ 	return 0;
+ 
+ err_pm:
++	if (lc898217xc->sensor_link)
++		device_link_del(lc898217xc->sensor_link);
+ 	pm_runtime_disable(dev);
+ 	pm_runtime_put_noidle(dev);
+ 	media_entity_cleanup(&lc898217xc->sd.entity);
+@@ -249,6 +306,8 @@ static void lc898217xc_remove(struct i2c_client *client)
+ 	struct device *dev = &client->dev;
+ 
+ 	v4l2_async_unregister_subdev(&lc898217xc->sd);
++	if (lc898217xc->sensor_link)
++		device_link_del(lc898217xc->sensor_link);
+ 	v4l2_ctrl_handler_free(&lc898217xc->ctrls);
+ 	media_entity_cleanup(&lc898217xc->sd.entity);
+ 
+-- 
+2.43.0
+
