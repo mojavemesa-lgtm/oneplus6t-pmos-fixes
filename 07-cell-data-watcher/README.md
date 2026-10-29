@@ -1,5 +1,9 @@
 # 07 - Mobile data says "connected" but nothing works
 
+Mobile data says connected but nothing loads.
+
+Keywords: OnePlus 6T postmarketOS mobile data connected no internet, fajita mainline ModemManager data dead, pmOS cellular data stops working, sdm845 qmapmux data watcher, Linux phone LTE no data, Plasma Mobile mobile data
+
 **Status: works in testing (2026-10-21 onward, NetworkManager + ModemManager, postmarketOS v26.06).**
 Tested on Verizon; should work on any carrier once you set the connection name.
 

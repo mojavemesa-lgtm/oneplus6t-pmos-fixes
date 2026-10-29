@@ -1,5 +1,9 @@
 # 09 - Chatty does not come back after it crashes (Plasma Mobile)
 
+Chatty (SMS app) does not come back after it crashes, so texts stop.
+
+Keywords: OnePlus 6T postmarketOS Chatty crash restart, Plasma Mobile Chatty autostart, pmOS Chatty not restarting, Linux phone SMS daemon dead after crash, fajita chatty plasma systemd
+
 **Status: works (tested 2026-09-25 onward, postmarketOS v26.06, Plasma Mobile).**
 
 ## Symptom

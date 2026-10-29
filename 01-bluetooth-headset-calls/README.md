@@ -1,5 +1,9 @@
 # 01 - Bluetooth headset calls (HFP) on the OnePlus 6T
 
+Calls through Bluetooth earbuds or a headset have no sound, or one direction only.
+
+Keywords: OnePlus 6T postmarketOS Bluetooth headset calls, fajita mainline HFP no audio, pmOS Bluetooth earbuds phone call microphone, sdm845 WCN3990 SLIMbus SCO, Linux phone HD voice mSBC, Plasma Mobile Bluetooth call audio
+
 **Status: works for us, on one phone, with two different earbuds and a PC acting as a headset.**
 Real cellular (VoLTE) calls, audio both ways, HD voice (mSBC) included. Tested by the maintainer
 2026-10-16 to 2026-10-21 on postmarketOS v26.06, kernel `7.1.0-rc1-sdm845` (sdm845-mainline tag

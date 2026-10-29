@@ -1,0 +1,12 @@
+[Unit]
+Description=Chime/buzz when the alert slider moves to ring or vibrate
+PartOf=graphical-session.target
+After=fbd-alert-slider.service
+
+[Service]
+ExecStart=%h/.local/bin/slider-feedback
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=graphical-session.target

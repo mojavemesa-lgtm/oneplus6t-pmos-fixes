@@ -1,5 +1,9 @@
 # 15 - Desktop crash when a Chromium (or Zen) in a distrobox container runs
 
+Running Chromium (or Zen) in a distrobox crashes the desktop.
+
+Keywords: Plasma Mobile KWin crash Chromium distrobox, postmarketOS distrobox Chromium crash compositor, OnePlus 6T Linux phone Chromium container KWin, Zen browser distrobox crash Wayland
+
 **Status: works (2026-10; Chromium in an Alpine/Debian distrobox container, postmarketOS v26.06 host).**
 
 ## Symptom

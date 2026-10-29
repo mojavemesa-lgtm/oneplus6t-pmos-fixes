@@ -1,5 +1,9 @@
 # 06 - GNOME Calls freezes after several calls with the screen off
 
+Calls app freezes after several calls with the screen off.
+
+Keywords: OnePlus 6T postmarketOS GNOME Calls freeze, Plasma Mobile Calls app hang screen off, pmOS KWin freeze dialing, Linux phone call app frozen, fajita calls screen off
+
 **Status: 26 screen-off dials OK after the change (Plasma Mobile 6.6.6, postmarketOS v26.06, 2026-10).
 NOT yet tested: a real incoming call arriving while the screen is locked.**
 

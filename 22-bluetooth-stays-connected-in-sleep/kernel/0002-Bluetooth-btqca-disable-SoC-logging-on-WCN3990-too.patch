@@ -1,0 +1,26 @@
+From c1f010e5abeecba6ea358db050dee33f719caf97 Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 23:51:27 -0700
+Subject: [PATCH] Bluetooth: btqca: disable SoC logging on WCN3990 too
+
+---
+ drivers/bluetooth/btqca.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/bluetooth/btqca.c b/drivers/bluetooth/btqca.c
+index dda763657..84a78c457 100644
+--- a/drivers/bluetooth/btqca.c
++++ b/drivers/bluetooth/btqca.c
+@@ -957,6 +957,12 @@ int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
+ 	}
+ 
+ 	switch (soc_type) {
++	case QCA_WCN3990:
++		/* Phone 2026-10-28: the WCN3990 accepts this too (status 0). Its
++		 * debug log packets otherwise follow every host wake. Non-fatal.
++		 */
++		qca_disable_soc_logging(hdev);
++		break;
+ 	case QCA_QCA2066:
+ 	case QCA_QCA6390:
+ 	case QCA_WCN3991:

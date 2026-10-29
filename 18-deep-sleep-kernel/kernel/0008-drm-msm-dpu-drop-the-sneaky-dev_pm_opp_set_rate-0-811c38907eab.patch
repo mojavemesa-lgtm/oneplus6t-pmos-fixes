@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 00:00:00 +0000
+Subject: [PATCH] drm/msm/dpu: drop sneaky dev_pm_opp_set_rate(0)
+
+Backport of upstream commit 811c38907eab. When the CRTC goes offline the
+PM callbacks disable the clocks instead.
+---
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_core_perf.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_core_perf.c
+index 13cc65806..6524531bd 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_core_perf.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_core_perf.c
+@@ -394,6 +394,10 @@ int dpu_core_perf_crtc_update(struct drm_crtc *crtc,
+ 
+ 		trace_dpu_core_perf_update_clk(kms->dev, !crtc->enabled, clk_rate);
+ 
++		/* If we're going offline, PM callbacks will disable the clocks instead */
++		if (!clk_rate)
++			return 0;
++
+ 		clk_rate = min(clk_rate, kms->perf.max_core_clk_rate);
+ 		ret = dev_pm_opp_set_rate(&kms->pdev->dev, clk_rate);
+ 		if (ret) {

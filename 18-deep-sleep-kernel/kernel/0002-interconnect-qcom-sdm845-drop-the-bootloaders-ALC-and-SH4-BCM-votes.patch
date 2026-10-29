@@ -1,0 +1,142 @@
+From ac0e24b27725955c428ce259cdae47d1c6207fc5 Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 17:37:56 -0700
+Subject: [PATCH] interconnect: qcom: sdm845: drop the bootloader's ALC and SH4
+ BCM votes
+
+The bootloader votes on the ALC (cmd-db 0x50010) and SH4 (0x5002c) BCMs
+through the apps RSC DRV. No node in this driver maps to either BCM, so
+Linux never rewrote those votes and they stayed for the whole uptime.
+With them in place the AOSS never enters AOSD/CXSD: on a OnePlus 6T the
+SoC sleep counters stayed at zero, while the downstream kernel on the
+same phone and firmware reached both states.
+
+Add both BCMs without nodes and give the RPMh provider a sync_state that
+commits node-less BCMs at zero, once, after all consumers have probed.
+Both go out in the same request: zeroing ALC alone (SH4 still voted)
+hung the SoC in testing; together, or SH4 first, was fine.
+
+IP0 is deliberately not added: IPA uses it for its core clock.
+
+Tested on OnePlus 6T: qcom_stats aosd/cxsd counters now increase in
+suspend without any manual vote.
+---
+ drivers/interconnect/qcom/icc-rpmh.c | 43 ++++++++++++++++++++++++++++
+ drivers/interconnect/qcom/icc-rpmh.h |  1 +
+ drivers/interconnect/qcom/sdm845.c   | 25 +++++++++++++++-
+ 3 files changed, 68 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/interconnect/qcom/icc-rpmh.c b/drivers/interconnect/qcom/icc-rpmh.c
+index 3b445acef..d85b86aff 100644
+--- a/drivers/interconnect/qcom/icc-rpmh.c
++++ b/drivers/interconnect/qcom/icc-rpmh.c
+@@ -371,5 +371,48 @@ void qcom_icc_rpmh_remove(struct platform_device *pdev)
+ }
+ EXPORT_SYMBOL_GPL(qcom_icc_rpmh_remove);
+ 
++/**
++ * qcom_icc_rpmh_sync_state - sync_state that also drops unclaimed BCM votes
++ * @dev: interconnect provider device
++ *
++ * The bootloader can leave votes on BCMs that have no master or slave
++ * modelled in Linux. An RPMh vote stays in place until the same DRV
++ * overwrites it, so such a vote would never go away and can keep the SoC
++ * out of its deepest sleep states (AOSS refuses AOSD/CXSD). Providers list
++ * those BCMs with no nodes; they are committed once, at zero, together in
++ * one request, when the provider reaches sync_state.
++ */
++void qcom_icc_rpmh_sync_state(struct device *dev)
++{
++	struct qcom_icc_provider *qp = dev_get_drvdata(dev);
++	struct qcom_icc_bcm *bcm;
++	int queued = 0;
++	size_t i;
++	int ret;
++
++	icc_sync_state(dev);
++
++	if (!qp || !qp->voter)
++		return;
++
++	for (i = 0; i < qp->num_bcms; i++) {
++		bcm = qp->bcms[i];
++		if (bcm->num_nodes || !bcm->addr)
++			continue;
++		qcom_icc_bcm_voter_add(qp->voter, bcm);
++		queued++;
++	}
++
++	if (!queued)
++		return;
++
++	ret = qcom_icc_bcm_voter_commit(qp->voter);
++	if (ret)
++		dev_err(dev, "failed to drop unclaimed BCM votes: %d\n", ret);
++	else
++		dev_info(dev, "dropped %d unclaimed BCM vote(s)\n", queued);
++}
++EXPORT_SYMBOL_GPL(qcom_icc_rpmh_sync_state);
++
+ MODULE_DESCRIPTION("Qualcomm RPMh interconnect driver");
+ MODULE_LICENSE("GPL v2");
+diff --git a/drivers/interconnect/qcom/icc-rpmh.h b/drivers/interconnect/qcom/icc-rpmh.h
+index 09d879140..8d43662e4 100644
+--- a/drivers/interconnect/qcom/icc-rpmh.h
++++ b/drivers/interconnect/qcom/icc-rpmh.h
+@@ -163,5 +163,6 @@ int qcom_icc_bcm_init(struct qcom_icc_bcm *bcm, struct device *dev);
+ void qcom_icc_pre_aggregate(struct icc_node *node);
+ int qcom_icc_rpmh_probe(struct platform_device *pdev);
+ void qcom_icc_rpmh_remove(struct platform_device *pdev);
++void qcom_icc_rpmh_sync_state(struct device *dev);
+ 
+ #endif
+diff --git a/drivers/interconnect/qcom/sdm845.c b/drivers/interconnect/qcom/sdm845.c
+index 6d5bbeda0..ad4f9532e 100644
+--- a/drivers/interconnect/qcom/sdm845.c
++++ b/drivers/interconnect/qcom/sdm845.c
+@@ -1328,6 +1328,27 @@ static struct qcom_icc_bcm bcm_sh5 = {
+ 	.nodes = { &qnm_apps },
+ };
+ 
++/*
++ * cmd-db "SH4" (0x5002c) and "ALC" (0x50010): no master/slave in this driver
++ * uses them, but the bootloader leaves votes on both through the apps RSC
++ * DRV. Left alone, those votes keep the AOSS out of AOSD/CXSD forever.
++ * Listed without nodes so qcom_icc_rpmh_sync_state() commits them at zero.
++ * Zero both in the same request: zeroing ALC while SH4 stayed voted hung
++ * the SoC in testing. Downstream (msm_bus) names: bcm-sh4, bcm-alc
++ * (mas-alc on mc_virt).
++ */
++static struct qcom_icc_bcm bcm_sh4 = {
++	.name = "SH4",
++	.keepalive = false,
++	.num_nodes = 0,
++};
++
++static struct qcom_icc_bcm bcm_alc = {
++	.name = "ALC",
++	.keepalive = false,
++	.num_nodes = 0,
++};
++
+ static struct qcom_icc_bcm bcm_sn0 = {
+ 	.name = "SN0",
+ 	.keepalive = true,
+@@ -1652,6 +1673,8 @@ static struct qcom_icc_bcm * const mem_noc_bcms[] = {
+ 	&bcm_sh2,
+ 	&bcm_sh3,
+ 	&bcm_sh5,
++	&bcm_sh4,
++	&bcm_alc,
+ };
+ 
+ static struct qcom_icc_node * const mem_noc_nodes[] = {
+@@ -1786,7 +1809,7 @@ static struct platform_driver qnoc_driver = {
+ 	.driver = {
+ 		.name = "qnoc-sdm845",
+ 		.of_match_table = qnoc_of_match,
+-		.sync_state = icc_sync_state,
++		.sync_state = qcom_icc_rpmh_sync_state,
+ 	},
+ };
+ module_platform_driver(qnoc_driver);

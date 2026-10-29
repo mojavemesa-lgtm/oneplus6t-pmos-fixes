@@ -1,5 +1,9 @@
 # 12 - Wallpaper falls back to the default picture
 
+The wallpaper you set falls back to the default picture.
+
+Keywords: Plasma Mobile wallpaper resets to default, OnePlus 6T postmarketOS wallpaper not saved, pmOS Plasma 6.6 wallpaper falls back, Linux phone ImageStackView wallpaper
+
 **Status: works (plasma-workspace 6.6.6, postmarketOS v26.06, 2026-09-26). A package upgrade overwrites it.**
 
 ## Symptom

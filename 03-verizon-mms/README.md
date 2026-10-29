@@ -1,5 +1,9 @@
 # 03 - Picture messages (MMS) on Verizon
 
+Picture messages (MMS) do not send or arrive on Verizon.
+
+Keywords: OnePlus 6T postmarketOS Verizon MMS, fajita mainline picture messages not working, pmOS mmsd-tng Verizon, Linux phone MMS Verizon APN, Plasma Mobile Chatty MMS failed
+
 **Status: works for receiving and sending, verified 2026-10-09 (postmarketOS v26.06, mmsd-tng 2.6.4,
 ModemManager, NetworkManager). Contains a labelled bandaid.** Other carriers: the idea may apply to any carrier
 that has a separate MMS-only APN, but the APN names and server addresses here are Verizon-specific.

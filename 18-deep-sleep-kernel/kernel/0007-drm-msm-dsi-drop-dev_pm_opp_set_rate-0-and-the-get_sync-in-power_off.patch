@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 00:00:00 +0000
+Subject: [PATCH] drm/msm/dsi: drop dev_pm_opp_set_rate(0) in link_clk_disable, no get_sync in power_off
+
+Backport of upstream commit 06b7ba2065 (drm/msm/dsi: Drop dev_pm_opp_set_rate(0)):
+the performance vote was dropped while the link clocks still ran. Also
+cancels the error worker before the clocks go away.
+---
+diff --git a/drivers/gpu/drm/msm/dsi/dsi_host.c b/drivers/gpu/drm/msm/dsi/dsi_host.c
+index 6bc886b0a..e5529cdd5 100644
+--- a/drivers/gpu/drm/msm/dsi/dsi_host.c
++++ b/drivers/gpu/drm/msm/dsi/dsi_host.c
+@@ -549,8 +549,6 @@ int dsi_link_clk_enable_v2(struct msm_dsi_host *msm_host)
+ 
+ void dsi_link_clk_disable_6g(struct msm_dsi_host *msm_host)
+ {
+-	/* Drop the performance state vote */
+-	dev_pm_opp_set_rate(&msm_host->pdev->dev, 0);
+ 	clk_disable_unprepare(msm_host->esc_clk);
+ 	clk_disable_unprepare(msm_host->pixel_clk);
+ 	clk_disable_unprepare(msm_host->byte_intf_clk);
+@@ -2550,8 +2548,6 @@ int msm_dsi_host_power_off(struct mipi_dsi_host *host)
+ {
+ 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+ 	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
+-	int ret;
+-
+ 
+ 	mutex_lock(&msm_host->dev_mutex);
+ 	if (!msm_host->power_on) {
+@@ -2559,10 +2555,11 @@ int msm_dsi_host_power_off(struct mipi_dsi_host *host)
+ 		goto unlock_ret;
+ 	}
+ 
+-	/* Ensure clocks are enabled before register access */
+-	ret = pm_runtime_get_sync(&msm_host->pdev->dev);
+-	if (ret < 0)
+-		pm_runtime_put_noidle(&msm_host->pdev->dev);
++	/*
++	 * The error worker touches registers (dsi_sw_reset); make sure none is
++	 * still queued once the link clocks go away below.
++	 */
++	cancel_work_sync(&msm_host->err_work);
+ 
+ 	dsi_ctrl_disable(msm_host);
+ 

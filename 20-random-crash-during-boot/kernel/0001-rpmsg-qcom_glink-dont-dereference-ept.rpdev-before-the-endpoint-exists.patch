@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 00:00:00 +0000
+Subject: [PATCH] rpmsg: qcom_glink: don't dereference ept.rpdev before the endpoint exists
+
+channel->ept.rpdev is only assigned in qcom_glink_create_ept(), after
+qcom_glink_create_remote() has already sent the open ack. The channel is
+reachable from the RX IRQ since qcom_glink_rx_open(), so a TX_DATA packet
+arriving in that window (e.g. the fastrpc channel while fastrpc is still
+probing) finds ept.rpdev == NULL and the wakeup-source call oopses in IRQ
+context at offsetof(struct rpmsg_device, dev.power.wakeup) = 0x120.
+---
+diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native.c
+index cb1d3008b..da66e912a 100644
+--- a/drivers/rpmsg/qcom_glink_native.c
++++ b/drivers/rpmsg/qcom_glink_native.c
+@@ -897,6 +897,7 @@ static int qcom_glink_rx_defer(struct qcom_glink *glink, size_t extra)
+ 
+ static int qcom_glink_rx_data(struct qcom_glink *glink, size_t avail)
+ {
++	struct rpmsg_device *rpdev;
+ 	struct glink_core_rx_intent *intent;
+ 	struct glink_channel *channel;
+ 	struct {
+@@ -1006,8 +1007,10 @@ static int qcom_glink_rx_data(struct qcom_glink *glink, size_t avail)
+ 
+ 		qcom_glink_rx_done(glink, channel, intent);
+ 
+-		pm_wakeup_ws_event(channel->ept.rpdev->dev.power.wakeup, 0,
+-				   true);
++		/* ept.rpdev is not set until qcom_glink_create_ept() ran */
++		rpdev = READ_ONCE(channel->ept.rpdev);
++		if (rpdev)
++			pm_wakeup_ws_event(rpdev->dev.power.wakeup, 0, true);
+ 	}
+ 
+ advance_rx:

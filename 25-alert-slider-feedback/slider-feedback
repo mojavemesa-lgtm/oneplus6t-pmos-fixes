@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+# Alert slider feedback: ring = chime + short buzz, vibrate = short buzz, silent = nothing.
+# Watches feedbackd's Profile (set by fbd-alert-slider when the slider moves).
+import subprocess
+from gi.repository import Gio, GLib
+
+CHIME = "/usr/share/sounds/ocean/stereo/completion-success.oga"
+BUZZ = [(0.8, 120)]
+SETTLE_MS = 350  # silent->ring passes through the middle notch; act only where it stops
+
+BUS, PATH, IFACE = "org.sigxcpu.Feedback", "/org/sigxcpu/Feedback", "org.sigxcpu.Feedback"
+bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+state = {"acted": None, "pending": None, "timer": 0}
+
+
+def get_profile():
+    r = bus.call_sync(BUS, PATH, "org.freedesktop.DBus.Properties", "Get",
+                      GLib.Variant("(ss)", (IFACE, "Profile")), None, 0, -1, None)
+    return r.unpack()[0]
+
+
+def buzz():
+    bus.call(BUS, PATH, IFACE + ".Haptic", "Vibrate",
+             GLib.Variant("(sa(du))", ("slider-feedback", BUZZ)), None, 0, -1, None, None)
+
+
+def act():
+    state["timer"] = 0
+    prof = state["pending"]
+    if prof == state["acted"]:
+        return False
+    state["acted"] = prof
+    if prof == "full":
+        buzz()
+        subprocess.Popen(["paplay", CHIME])
+    elif prof == "quiet":
+        buzz()
+    return False
+
+
+def on_signal(_conn, _sender, _path, _iface, _sig, params):
+    iface, changed, _ = params.unpack()
+    if iface != IFACE or "Profile" not in changed:
+        return
+    state["pending"] = changed["Profile"]
+    if state["timer"]:
+        GLib.source_remove(state["timer"])
+    state["timer"] = GLib.timeout_add(SETTLE_MS, act)
+
+
+state["acted"] = get_profile()
+bus.signal_subscribe(BUS, "org.freedesktop.DBus.Properties", "PropertiesChanged", PATH,
+                     None, Gio.DBusSignalFlags.NONE, on_signal)
+GLib.MainLoop().run()

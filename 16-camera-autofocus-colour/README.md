@@ -1,5 +1,9 @@
 # 16 - Camera: autofocus, colours, rear camera checker pattern
 
+Camera: autofocus does not work, colours are wrong, or the rear camera shows a checker pattern.
+
+Keywords: OnePlus 6T postmarketOS camera, fajita mainline camera autofocus, pmOS rear camera checker pattern, sdm845 IMX371 IMX519 camera Linux phone, Snapdragon 845 libcamera lolren, Plasma Mobile camera
+
 **Status: rear cameras work (autofocus, decent colour). Tested 2026-10-09, kernel 7.1.0-rc1-sdm845,
 postmarketOS v26.06. The front camera is still grey on our phone (see "Front camera" below).**
 

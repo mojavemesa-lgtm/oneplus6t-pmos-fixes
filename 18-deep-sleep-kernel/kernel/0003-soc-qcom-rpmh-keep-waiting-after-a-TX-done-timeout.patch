@@ -1,0 +1,81 @@
+From f1400251764a775a640a56012dc4179c28ea0d8e Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 18:18:07 -0700
+Subject: [PATCH] soc: qcom: rpmh: keep waiting after a TX-done timeout
+
+rpmh_write() and rpmh_write_batch() give up after 10 s and return
+-ETIMEDOUT, freeing the request (on-stack in rpmh_write(), kfree() in
+rpmh_write_batch()) while the TCS still points at it. When the TX-done
+interrupt finally arrives, tcs_tx_done() hands the stale request to
+rpmh_tx_done(), which calls complete() on freed memory.
+
+This was hit on sdm845 (OnePlus 6T) after a deep-sleep wake: a long
+interrupts-off window on CPU0 (a dwc3 warning storm) delayed the RSC
+TX-done interrupt past the timeout, and the late interrupt crashed in
+rpmh_tx_done() on a garbage completion.
+
+The hardware still owns the request until TX done, so the only safe
+thing to do on a timeout is to warn and keep waiting.
+
+---
+ drivers/soc/qcom/rpmh.c | 34 +++++++++++++++++++++++-----------
+ 1 file changed, 23 insertions(+), 11 deletions(-)
+
+diff --git a/drivers/soc/qcom/rpmh.c b/drivers/soc/qcom/rpmh.c
+index ca37da3dc..3d466a690 100644
+--- a/drivers/soc/qcom/rpmh.c
++++ b/drivers/soc/qcom/rpmh.c
+@@ -265,9 +265,18 @@ int rpmh_write(const struct device *dev, enum rpmh_state state,
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = wait_for_completion_timeout(&compl, RPMH_TIMEOUT_MS);
+-	WARN_ON(!ret);
+-	return (ret > 0) ? 0 : -ETIMEDOUT;
++	if (!wait_for_completion_timeout(&compl, RPMH_TIMEOUT_MS)) {
++		/*
++		 * The TCS still points at rpm_msg, which lives on this stack.
++		 * Returning now would let a late TX-done interrupt complete()
++		 * a dead stack frame, so warn and keep waiting.
++		 */
++		WARN(1, "rpmh: no TX done after %u ms for addr %#x, waiting\n",
++		     jiffies_to_msecs(RPMH_TIMEOUT_MS), rpm_msg.msg.cmds[0].addr);
++		wait_for_completion(&compl);
++	}
++
++	return 0;
+ }
+ EXPORT_SYMBOL_GPL(rpmh_write);
+ 
+@@ -376,20 +385,23 @@ int rpmh_write_batch(const struct device *dev, enum rpmh_state state,
+ 
+ 	time_left = RPMH_TIMEOUT_MS;
+ 	while (i--) {
+-		time_left = wait_for_completion_timeout(&compls[i], time_left);
++		if (time_left)
++			time_left = wait_for_completion_timeout(&compls[i],
++								time_left);
+ 		if (!time_left) {
+ 			/*
+-			 * Better hope they never finish because they'll signal
+-			 * the completion that we're going to free once
+-			 * we've returned from this function.
++			 * The TCSes still point at rpm_msgs[] and compls[],
++			 * which are freed below. A late TX-done interrupt
++			 * would then complete() freed memory, so warn and
++			 * keep waiting until every sent message is done.
+ 			 */
+-			WARN_ON(1);
+-			ret = -ETIMEDOUT;
+-			goto exit;
++			WARN_ONCE(1, "rpmh: no TX done after %u ms for addr %#x, waiting\n",
++				  jiffies_to_msecs(RPMH_TIMEOUT_MS),
++				  rpm_msgs[i].msg.cmds[0].addr);
++			wait_for_completion(&compls[i]);
+ 		}
+ 	}
+ 
+-exit:
+ 	kfree(ptr);
+ 
+ 	return ret;

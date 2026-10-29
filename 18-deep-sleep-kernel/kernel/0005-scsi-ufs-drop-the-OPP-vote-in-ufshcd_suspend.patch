@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 00:00:00 +0000
+Subject: [PATCH] scsi: ufs: drop the OPP (CX/interconnect vote) in ufshcd_suspend()
+
+Clocks are off in system suspend, so drop the OPP too. Otherwise a
+runtime-active UFS controller keeps the CX power domain at its active
+corner through system suspend and the SoC never reaches CX collapse.
+---
+--- a/include/ufs/ufshcd.h
++++ b/include/ufs/ufshcd.h
+@@ -1261,6 +1261,8 @@
+ 	u8 device_preshoot_cap;
+ 	u8 device_deemphasis_cap;
+ 	struct ufshcd_tx_eq_params tx_eq_params[UFS_HS_GEAR_MAX];
++	/* OPP rate dropped in ufshcd_suspend(), restored in ufshcd_resume() */
++	unsigned long opp_suspend_freq;
+ };
+ 
+ /**
+--- a/drivers/ufs/core/ufshcd.c
++++ b/drivers/ufs/core/ufshcd.c
+@@ -10571,6 +10571,21 @@
+ 					hba->clk_gating.state);
+ 	}
+ 
++	/*
++	 * Clocks are off: drop the OPP too, so its required-opps (the power
++	 * domain performance level, e.g. CX on Qualcomm) and interconnect votes
++	 * go away. Otherwise a runtime-active controller keeps CX at its active
++	 * corner through system suspend and the SoC never reaches CX collapse.
++	 */
++	if (hba->use_pm_opp && !hba->opp_suspend_freq) {
++		hba->opp_suspend_freq = hba->devfreq ?
++					hba->devfreq->previous_freq : ULONG_MAX;
++		if (!hba->opp_suspend_freq)
++			hba->opp_suspend_freq = ULONG_MAX;
++		if (dev_pm_opp_set_rate(hba->dev, 0))
++			hba->opp_suspend_freq = 0;
++	}
++
+ 	ufshcd_vreg_set_lpm(hba);
+ 	/* Put the host controller in low power mode if possible */
+ 	ufshcd_hba_vreg_set_lpm(hba);
+@@ -10603,6 +10618,14 @@
+ 	if (ret)
+ 		goto out;
+ 
++	/* Restore the OPP dropped in ufshcd_suspend() before clocks run */
++	if (hba->opp_suspend_freq) {
++		ret = ufshcd_opp_set_rate(hba, hba->opp_suspend_freq);
++		if (ret)
++			goto disable_vreg;
++		hba->opp_suspend_freq = 0;
++	}
++
+ 	/* Make sure clocks are enabled before accessing controller */
+ 	ret = ufshcd_setup_clocks(hba, true);
+ 	if (ret)

@@ -1,0 +1,222 @@
+From 6ca7277b39ad031adb43d42d4c393ad89ad5100e Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Tue, 27 Oct 2026 06:07:40 -0700
+Subject: [PATCH] bootctrl: give the requested slot the active type GUID and
+ swap every a/b pair
+
+set_active_boot_slot() always wrote the active type GUID to the _a
+partitions and the inactive marker GUID to the _b partitions, whatever
+slot was requested. '-s b' therefore marked B active in the attributes
+but left B with the marker GUID, so the bootloader (ABL ValidateSlotGuids)
+refused slot B and its fallback moved the marker onto A as well: the
+device no longer booted either slot until the GPT was repaired via EDL.
+
+Give the slot being activated the real GUID and the other slot the
+marker, like the original QTI boot_control.cpp does.
+
+Also swap every <name>_a/<name>_b pair found in /dev/disk/by-partlabel
+instead of the hard-coded list: the bootloader swaps all pairs
+(LOGO, bluetooth, dsp, mdtp, odm ... on a OnePlus 6T), so the table
+should end up in the same state it would produce itself. For a pair
+whose halves live on different disks (xbl_a/xbl_b on the two UFS boot
+LUNs) only the active flag is updated on each side, as the bootloader
+does.
+---
+ bootctrl_impl.c | 141 +++++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 103 insertions(+), 38 deletions(-)
+
+diff --git a/bootctrl_impl.c b/bootctrl_impl.c
+index 5586f72..71fde6a 100644
+--- a/bootctrl_impl.c
++++ b/bootctrl_impl.c
+@@ -51,6 +51,7 @@
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+@@ -451,6 +452,48 @@ const char *get_suffix(unsigned slot)
+ 
+ // The argument here is a vector of partition names(including the slot suffix)
+ // that lie on a single disk
++#define MAX_AB_PTNS 128
++
++/*
++ * Collect every "<name>_a" partition in BOOT_DEV_DIR that has a "<name>_b"
++ * sibling. The bootloader (ABL SwitchSlot) swaps the type GUIDs of EVERY
++ * a/b pair on the device, not only the ones in g_all_ptns, so the slot
++ * switch below must do the same or the tables end up in a mixed state
++ * (verified on a OnePlus 6T, where LOGO/bluetooth/dsp/mdtp/mdtpsecapp/odm
++ * are also swapped by the bootloader).
++ */
++static int list_ab_partitions(char names[][MAX_GPT_NAME_SIZE + 1], int max)
++{
++	DIR *d;
++	struct dirent *de;
++	struct stat st;
++	char buf[GPT_PTN_PATH_MAX];
++	int n = 0;
++
++	d = opendir(BOOT_DEV_DIR);
++	if (!d) {
++		fprintf(stderr, "%s: can't open %s: %s\n", __func__, BOOT_DEV_DIR, strerror(errno));
++		return -1;
++	}
++	while ((de = readdir(d)) && n < max) {
++		size_t len = strlen(de->d_name);
++		if (len < 3 || len > MAX_GPT_NAME_SIZE || strcmp(de->d_name + len - 2, AB_SLOT_A_SUFFIX))
++			continue;
++		snprintf(buf, sizeof(buf), "%s/%s", BOOT_DEV_DIR, de->d_name);
++		buf[strlen(buf) - 1] = 'b';
++		if (stat(buf, &st))
++			continue;
++		strcpy(names[n++], de->d_name);
++	}
++	closedir(d);
++	return n;
++}
++
++static int cmp_names(const void *a, const void *b)
++{
++	return strcmp((const char *)a, (const char *)b);
++}
++
+ static int boot_ctl_set_active_slot_for_partitions(struct gpt_disk *disk,
+ 						   unsigned slot)
+ {
+@@ -466,42 +509,33 @@ static int boot_ctl_set_active_slot_for_partitions(struct gpt_disk *disk,
+ 	// Pointer to partition entry of current 'B' partition
+ 	uint8_t *pentryB = NULL;
+ 	uint8_t *pentryB_bak = NULL;
+-	struct stat st;
++	static char ab_names[MAX_AB_PTNS][MAX_GPT_NAME_SIZE + 1];
++	int nab;
++
++	(void)rc;
+ 
+ 	LOGD("Marking slot %s as active:\n", slot_suffix_arr[slot]);
+ 
+-	for (i = 0, slotA = g_all_ptns[0]; i < ARRAY_SIZE(g_all_ptns); slotA = g_all_ptns[++i]) {
+-		// Chop off the slot suffix from the partition name to
+-		// make the string easier to work with.
++	nab = list_ab_partitions(ab_names, MAX_AB_PTNS);
++	if (nab < 0)
++		return -1;
++	qsort(ab_names, nab, sizeof(ab_names[0]), cmp_names);
++	for (i = 0; i < nab; i++)
++		if (!strcmp(ab_names[i], "boot_a"))
++			break;
++	if (i == nab) {
++		fprintf(stderr, "Couldn't find required partition boot_a\n");
++		return -1;
++	}
++
++	for (i = 0; i < nab; i++) {
++		slotA = ab_names[i];
+ 		LOGD("Part: %s\n", slotA);
+-		int n = strlen(slotA) - strlen(AB_SLOT_A_SUFFIX);
+-		if (n + 1 < 3 || n + 1 > MAX_GPT_NAME_SIZE) {
+-			fprintf(stderr, "Invalid partition name: %s\n", slotA);
+-			return -1;
+-		}
+ 
+ 		memset(slotB, 0, sizeof(slotB));
+ 		strncat(slotB, slotA, MAX_GPT_NAME_SIZE - 1);
+ 		slotB[strlen(slotB) - 1] = 'b';
+ 
+-		rc = snprintf(buf, sizeof(buf) - 1, "%s", BOOT_DEV_DIR);
+-		snprintf(buf + rc, GPT_PTN_PATH_MAX - rc, "/%s", slotA);
+-		LOGD("Checking for partition %s\n", buf);
+-		if (stat(buf, &st)) {
+-			if (!strcmp(slotA, "boot_a") || !strcmp(slotA, "dtbo_a")) {
+-				fprintf(stderr, "Couldn't find required partition %s\n", slotA);
+-				return -1;
+-			}
+-			// Not every device has every partition
+-			continue;
+-		}
+-
+-		buf[strlen(buf) - 1] = 'b';
+-		if (stat(buf, &st)) {
+-			fprintf(stderr, "Partition %s does not exist\n", buf);
+-			return -1;
+-		}
+-
+ 		// Get the disk containing this partition. This only
+ 		// actually re-initialises disk if this partition refers
+ 		// to a different block device than the last one.
+@@ -514,12 +548,35 @@ static int boot_ctl_set_active_slot_for_partitions(struct gpt_disk *disk,
+ 		pentryA_bak = gpt_disk_get_pentry(disk, slotA, SECONDARY_GPT);
+ 		pentryB = gpt_disk_get_pentry(disk, slotB, PRIMARY_GPT);
+ 		pentryB_bak = gpt_disk_get_pentry(disk, slotB, SECONDARY_GPT);
+-		if (!pentryA || !pentryA_bak || !pentryB || !pentryB_bak) {
+-			// None of these should be NULL since we have already
+-			// checked for A & B versions earlier.
++		if (!pentryA || !pentryA_bak) {
+ 			fprintf(stderr, "Slot pentries for %s not found.\n", slotA);
+ 			return -1;
+ 		}
++		if (!pentryB || !pentryB_bak) {
++			// The _b partition lives on another disk (xbl_a / xbl_b on
++			// the two UFS boot LUNs). The bootloader does not swap type
++			// GUIDs for those, it only updates the active flag on each
++			// side, and PBL picks the LUN via bBootLunEn (set below).
++			if (partition_is_for_disk(disk, slotB, buf, sizeof(buf)) != false) {
++				fprintf(stderr, "Slot pentries for %s not found.\n", slotB);
++				return -1;
++			}
++			memcpy(active_guid, pentryA, TYPE_GUID_SIZE);
++			UPDATE_SLOT(pentryA, active_guid, slot == 0 ? SLOT_ACTIVE : SLOT_INACTIVE);
++			UPDATE_SLOT(pentryA_bak, active_guid, slot == 0 ? SLOT_ACTIVE : SLOT_INACTIVE);
++			if (gpt_disk_get_disk_info(slotB, disk) < 0)
++				return -1;
++			pentryB = gpt_disk_get_pentry(disk, slotB, PRIMARY_GPT);
++			pentryB_bak = gpt_disk_get_pentry(disk, slotB, SECONDARY_GPT);
++			if (!pentryB || !pentryB_bak) {
++				fprintf(stderr, "Slot pentries for %s not found.\n", slotB);
++				return -1;
++			}
++			memcpy(active_guid, pentryB, TYPE_GUID_SIZE);
++			UPDATE_SLOT(pentryB, active_guid, slot == 1 ? SLOT_ACTIVE : SLOT_INACTIVE);
++			UPDATE_SLOT(pentryB_bak, active_guid, slot == 1 ? SLOT_ACTIVE : SLOT_INACTIVE);
++			continue;
++		}
+ 		LOGD("\tAB attr (A): 0x%x (backup: 0x%x)\n", *(uint16_t *)(pentryA + AB_FLAG_OFFSET),
+ 		     *(uint16_t *)(pentryA_bak + AB_FLAG_OFFSET));
+ 		LOGD("\tAB attr (B): 0x%x (backup: 0x%x)\n", *(uint16_t *)(pentryB + AB_FLAG_OFFSET),
+@@ -548,14 +605,22 @@ static int boot_ctl_set_active_slot_for_partitions(struct gpt_disk *disk,
+ 			return -1;
+ 		}
+ 
+-		// Mark A as active in primary table
+-		UPDATE_SLOT(pentryA, active_guid, a_state);
+-		// Mark A as active in backup table
+-		UPDATE_SLOT(pentryA_bak, active_guid, a_state);
+-		// Mark B as inactive in primary table
+-		UPDATE_SLOT(pentryB, inactive_guid, b_state);
+-		// Mark B as inactive in backup table
+-		UPDATE_SLOT(pentryB_bak, inactive_guid, b_state);
++		// The slot being activated gets the real ("active") type GUID,
++		// the other slot gets the inactive marker GUID. Previously A
++		// always received the active GUID, whatever slot was requested,
++		// so "-s b" left B with the marker GUID: the bootloader then
++		// refuses to boot B (boot/abl type GUID check) and its fallback
++		// SwitchSlot(a) moves the marker onto A as well, which bricks
++		// normal boot until the GPT is repaired.
++		const char *a_guid = (slot == 0) ? active_guid : inactive_guid;
++		const char *b_guid = (slot == 1) ? active_guid : inactive_guid;
++
++		// Update A in primary and backup table
++		UPDATE_SLOT(pentryA, a_guid, a_state);
++		UPDATE_SLOT(pentryA_bak, a_guid, a_state);
++		// Update B in primary and backup table
++		UPDATE_SLOT(pentryB, b_guid, b_state);
++		UPDATE_SLOT(pentryB_bak, b_guid, b_state);
+ 	}
+ 
+ 	// write updated content to disk
+-- 
+2.43.0
+

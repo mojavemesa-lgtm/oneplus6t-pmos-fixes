@@ -1,5 +1,9 @@
 # 11 - Auto-rotate dead after boot; screen turns back to portrait on wake
 
+Auto-rotate does not work after boot, or the screen turns back to portrait on wake.
+
+Keywords: OnePlus 6T postmarketOS auto-rotate not working, Plasma Mobile screen rotation after wake, pmOS accelerometer rotate boot, fajita mainline autorotate, iio-sensor-proxy kscreen Linux phone
+
 **Status: works (Plasma 6.6.6, postmarketOS v26.06, 2026-09/10).**
 
 ## Symptoms

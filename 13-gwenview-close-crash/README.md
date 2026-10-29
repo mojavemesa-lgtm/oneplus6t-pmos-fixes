@@ -1,5 +1,9 @@
 # 13 - Gwenview crashes when it is closed (or on pinch)
 
+Gwenview crashes when you close it or pinch to zoom.
+
+Keywords: Gwenview crash on close Plasma Mobile, pmOS Gwenview pinch crash, Linux phone image viewer crash, KDE Gwenview touch gesture crash, OnePlus 6T postmarketOS Gwenview
+
 **Status: works (Gwenview 26.04.2, postmarketOS v26.06, 2026-10). Upstream: KDE merge request !376.**
 
 ## Symptom

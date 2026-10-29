@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 00:00:00 +0000
+Subject: [PATCH] ASoC: codecs: wcd934x: capture path needs MCLK
+
+Mainline wcd934x has no dependency from the AIF capture widgets on the
+codec MCLK widget. Capture only worked while MCLK happened to be left on by
+an earlier playback; once nothing else kept it on, recording returned
+digital silence. Make AIF1/2/3 CAP depend on MCLK.
+---
+diff --git a/sound/soc/codecs/wcd934x.c b/sound/soc/codecs/wcd934x.c
+index 0f29a187e..f7899554d 100644
+--- a/sound/soc/codecs/wcd934x.c
++++ b/sound/soc/codecs/wcd934x.c
+@@ -5795,6 +5795,13 @@ static const struct snd_soc_dapm_route wcd934x_audio_map[] = {
+ 	{"AIF1 CAP", NULL, "AIF1_CAP Mixer"},
+ 	{"AIF2 CAP", NULL, "AIF2_CAP Mixer"},
+ 	{"AIF3 CAP", NULL, "AIF3_CAP Mixer"},
++	/*
++	 * The TX chain (ADC, decimators, SLIM TX) runs on MCLK too. Without
++	 * these routes capture only worked while MCLK happened to be left on.
++	 */
++	{"AIF1 CAP", NULL, "MCLK"},
++	{"AIF2 CAP", NULL, "MCLK"},
++	{"AIF3 CAP", NULL, "MCLK"},
+ 
+ 	WCD934X_SLIM_TX_AIF_PATH(0),
+ 	WCD934X_SLIM_TX_AIF_PATH(1),

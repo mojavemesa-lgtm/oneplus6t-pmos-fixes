@@ -1,5 +1,9 @@
 # 14 - Whole desktop session dies when the lock screen is used
 
+The whole desktop session dies when the lock screen is used.
+
+Keywords: Plasma Mobile lock screen crashes session, OnePlus 6T postmarketOS session killed lock screen, pmOS SIGUSR1 kills Plasma session, Linux phone lockscreen logout, KDE kscreenlocker USR1
+
 **Status: works (Plasma 6.6.6, postmarketOS v26.06, 2026-09-26 onward).**
 
 ## Symptom

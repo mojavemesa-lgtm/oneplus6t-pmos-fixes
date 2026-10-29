@@ -1,0 +1,13 @@
+[Unit]
+Description=Reboot with a blocked-task dump if the storage hangs
+After=local-fs.target
+
+[Service]
+ExecStartPre=/bin/sh -c 'mkdir -p /run/iowatch && cp /bin/busybox /lib/ld-musl-aarch64.so.1 /usr/local/lib/iowatch/iowatch.sh /run/iowatch/ && mkdir -p /run/iowatch/bin && for a in sleep date sync rm touch; do ln -sf /run/iowatch/busybox /run/iowatch/bin/$a; done'
+ExecStart=/run/iowatch/ld-musl-aarch64.so.1 /run/iowatch/busybox sh /run/iowatch/iowatch.sh
+Restart=always
+OOMScoreAdjust=-1000
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

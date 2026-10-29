@@ -1,5 +1,9 @@
 # 04 - Bluetooth chip hangs ("Reading QCA version information failed (-110)")
 
+Bluetooth suddenly dies and only a reboot brings it back.
+
+Keywords: OnePlus 6T postmarketOS Bluetooth not working after boot, fajita mainline hci0 Reading QCA version information failed -110, pmOS Bluetooth chip hang, sdm845 WCN3990 qcom geni serial DMA, Linux phone Bluetooth dead second power cycle
+
 **Status: kernel fix is an upstream commit, flashed 2026-10-08 (r1 build, 7.1.0-rc1-sdm845) and the hang
 has not recurred since. The recovery script is a stopgap that worked in tests.**
 
@@ -22,6 +26,23 @@ to this serial port.
   it sees the hang, power-cycles the chip by unbinding and rebinding the serial driver, then powers
   Bluetooth on and reconnects paired devices. It refuses to act while hci0 is still powered, because
   unbinding a powered chip crashes the kernel.
+
+## Second cause: UART DMA bugs after boot (added 2026-10-29)
+
+On the 7.1-rc1 kernel, Bluetooth also failed on roughly every second setup after boot (the same `-110` log
+line, chip never answers). Three fixes to the same geni serial driver cured it; 10 clean boots in a row on
+the k27 build, and they are part of the current k30 tree:
+
+- `452d6fa37ae9` (Viken Dadhaniya): kfifo underflow in the TX path.
+- `7ea38c49e717` (Guangshuo Li): stale DMA completions after a flush.
+- `e3c04834ae1a` (Jan Sebastian Goette): TX DMA flush handling.
+
+Files in `kernel/`:
+- `0001-serial-qcom-geni-uart-dma-flush-fixes-combined.patch`: the three fixes folded into one patch that
+  applies to the sdm845-mainline 7.1-rc1 tree (the originals do not apply one after another there).
+- `upstream/`: the three original upstream patches, unchanged, for newer trees where they apply directly.
+
+Install: `git am kernel/0001-*.patch`, rebuild, flash (see `../docs/BUILDING-A-KERNEL.md`).
 
 ## Install
 Kernel: `git am geni-rx-dma-stall.patch`, rebuild, flash.

@@ -1,0 +1,48 @@
+From 3780edcc024cd71c2773bb972cf8da2ce4167d80 Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 18:54:15 -0700
+Subject: [PATCH] usb: dwc3: gadget: don't start a transfer on enable while End
+ Transfer is delayed
+
+When an endpoint is disabled while ep0 is not in SETUP phase, the End
+Transfer is delayed (DWC3_EP_DELAY_STOP) and the disable keeps
+DWC3_EP_DELAY_STOP and DWC3_EP_TRANSFER_STARTED. If the function driver
+enables the endpoint again right away (u_ether eth_stop() does
+usb_ep_disable() + usb_ep_enable() when the netdev is closed during an
+NCM Set Interface), __dwc3_gadget_ep_enable() issues the no-op Start
+Transfer while the old transfer is still active, and the controller
+answers "No Resource". The following kicks fail the same way.
+
+Skip the no-op Start Transfer in that case and set DWC3_EP_DELAY_START.
+The delayed End Transfer is sent at the next SETUP stage, and its
+completion clears DWC3_EP_TRANSFER_STARTED and kicks queued requests.
+
+hardening.
+
+---
+ drivers/usb/dwc3/gadget.c | 18 ++++++++++++++----
+ 1 file changed, 14 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/usb/dwc3/gadget.c b/drivers/usb/dwc3/gadget.c
+index 4c068c5f1..70226b96e 100644
+--- a/drivers/usb/dwc3/gadget.c
++++ b/drivers/usb/dwc3/gadget.c
+@@ -981,8 +982,17 @@ static int __dwc3_gadget_ep_enable(struct dwc3_ep *dep, unsigned int action)
+ 	/*
+ 	 * Issue StartTransfer here with no-op TRB so we can always rely on No
+ 	 * Response Update Transfer command.
++	 *
++	 * If the endpoint was disabled while its End Transfer was delayed
++	 * (DWC3_EP_DELAY_STOP, ep0 not in SETUP phase), the old transfer is
++	 * still active in the controller: a new Start Transfer now fails with
++	 * "No Resource". Skip it and let the delayed End Transfer run first;
++	 * its completion clears DWC3_EP_TRANSFER_STARTED and kicks any queued
++	 * requests through DWC3_EP_DELAY_START.
+ 	 */
+-	if (usb_endpoint_xfer_bulk(desc) ||
++	if (dep->flags & DWC3_EP_DELAY_STOP) {
++		dep->flags |= DWC3_EP_DELAY_START;
++	} else if (usb_endpoint_xfer_bulk(desc) ||
+ 			usb_endpoint_xfer_int(desc)) {
+ 		struct dwc3_gadget_ep_cmd_params params;
+ 		struct dwc3_trb	*trb;

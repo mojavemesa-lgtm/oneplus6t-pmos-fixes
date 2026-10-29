@@ -1,0 +1,90 @@
+From 513b1a807d471d1eb5daa895d4570089b43f132b Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 14:16:58 -0700
+Subject: [PATCH 6/6] main: SIGUSR1/SIGUSR2 doze hints enter/leave terse state
+ without logind
+
+---
+ src/main.c            | 22 ++++++++++++++++++++++
+ src/mm-base-manager.c | 11 ++++++-----
+ 2 files changed, 28 insertions(+), 5 deletions(-)
+
+diff --git a/src/main.c b/src/main.c
+index 6aa363fd..100483d0 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -107,6 +107,26 @@ resuming_quick_cb (MMSleepMonitor *sleep_monitor)
+     mm_base_manager_sync (manager);
+ }
+ 
++/* Screen-off ("doze") hint from the system's sleep daemon, like Android's
++ * DeviceStateMonitor: SIGUSR1 = enter terse state once (only calls/texts and
++ * data packets wake the host), SIGUSR2 = leave it (sync). Used when the host
++ * suspends repeatedly by itself without going through logind each time. */
++static gboolean
++doze_enter_cb (gpointer user_data)
++{
++    mm_msg ("doze hint: setting modem in terse mode");
++    mm_base_manager_cleanup (manager, MM_BASE_MANAGER_CLEANUP_TERSE, NULL);
++    return G_SOURCE_CONTINUE;
++}
++
++static gboolean
++doze_exit_cb (gpointer user_data)
++{
++    mm_msg ("doze hint: syncing modem state");
++    mm_base_manager_sync (manager);
++    return G_SOURCE_CONTINUE;
++}
++
+ #endif
+ 
+ static void
+@@ -248,6 +268,8 @@ main (int argc, char *argv[])
+             sleep_monitor = mm_sleep_monitor_get ();
+             g_signal_connect (sleep_monitor, MM_SLEEP_MONITOR_SLEEPING, G_CALLBACK (sleeping_quick_cb), NULL);
+             g_signal_connect (sleep_monitor, MM_SLEEP_MONITOR_RESUMING, G_CALLBACK (resuming_quick_cb), NULL);
++            g_unix_signal_add (SIGUSR1, doze_enter_cb, NULL);
++            g_unix_signal_add (SIGUSR2, doze_exit_cb, NULL);
+         } else {
+             mm_dbg ("Full suspend/resume hooks enabled");
+             sleep_monitor = mm_sleep_monitor_get ();
+diff --git a/src/mm-base-manager.c b/src/mm-base-manager.c
+index 976033e5..5164e560 100644
+--- a/src/mm-base-manager.c
++++ b/src/mm-base-manager.c
+@@ -1096,7 +1096,7 @@ manager_cleanup_context_new (MMBaseManager  *self,
+ 
+     ctx = g_slice_new0 (ManagerCleanupContext);
+     ctx->self = g_object_ref (self);
+-    ctx->sleep_ctx = g_object_ref (sleep_ctx);
++    ctx->sleep_ctx = sleep_ctx ? g_object_ref (sleep_ctx) : NULL;
+     return ctx;
+ }
+ 
+@@ -1126,9 +1126,10 @@ manager_cleanup_context_maybe_complete (ManagerCleanupContext *ctx,
+         g_slist_free (ctx->devices_to_remove);
+ 
+         mm_obj_dbg (ctx->self, "cleanup complete");
+-        mm_sleep_context_complete (ctx->sleep_ctx, NULL);
+-
+-        g_object_unref (ctx->sleep_ctx);
++        if (ctx->sleep_ctx) {
++            mm_sleep_context_complete (ctx->sleep_ctx, NULL);
++            g_object_unref (ctx->sleep_ctx);
++        }
+         g_object_unref (ctx->self);
+         g_slice_free (ManagerCleanupContext, ctx);
+     }
+@@ -1227,7 +1228,7 @@ mm_base_manager_cleanup (MMBaseManager             *self,
+     /* Increase cleanup timeout for each connected bearer; disconnecting a
+      * bearer can take many seconds.
+      */
+-    if (active_bearers)
++    if (active_bearers && sleep_ctx)
+         mm_sleep_context_timeout_backoff (sleep_ctx, active_bearers * 20);
+ 
+     /* Complete cleanup if there were no devices */
+-- 
+2.43.0
+

@@ -1,5 +1,9 @@
 # 02 - VoLTE "chipmunk" call audio
 
+The other person sounds like a sped-up chipmunk on some calls.
+
+Keywords: OnePlus 6T postmarketOS VoLTE chipmunk voice, fajita mainline call audio fast, pmOS wideband AMR-WB sped up voice, sdm845 q6voice topology 69488, Linux phone HD voice calls garbled, Plasma Mobile call audio
+
 **Status: works. Confirmed on the earpiece on 2026-09-23, kernel 7.1.0-rc1-sdm845, postmarketOS v26.06.**
 Needs no root and no custom kernel.
 

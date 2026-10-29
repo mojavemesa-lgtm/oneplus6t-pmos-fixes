@@ -1,5 +1,9 @@
 # 08 - Texts vanish when two messaging apps are installed (Spacebar + Chatty)
 
+Text messages vanish when two messaging apps are installed.
+
+Keywords: OnePlus 6T postmarketOS SMS disappear, Plasma Mobile Spacebar Chatty texts lost, pmOS two SMS apps delete messages, Linux phone SMS vanish, fajita Chatty Spacebar conflict
+
 **Status: works (postmarketOS v26.06, Plasma Mobile, 2026-09/10).**
 
 ## Symptom

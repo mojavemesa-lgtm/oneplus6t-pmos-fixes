@@ -1,0 +1,41 @@
+From 6735a3b3ee24911aa35052029456a63837d0f377 Mon Sep 17 00:00:00 2001
+From: oneplus6t-pmos-fixes <noreply@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 22:18:45 -0700
+Subject: [PATCH] Bluetooth: optional keep links on suspend
+ (bluetooth.keep_links_on_suspend)
+
+---
+ net/bluetooth/hci_sync.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/net/bluetooth/hci_sync.c b/net/bluetooth/hci_sync.c
+index fd3aacdea..dd6c12846 100644
+--- a/net/bluetooth/hci_sync.c
++++ b/net/bluetooth/hci_sync.c
+@@ -6234,6 +6234,17 @@ static int hci_pause_scan_sync(struct hci_dev *hdev)
+  * Update passive scanning (lower duty cycle)
+  * Set suspend_status to BT_SUSPEND_CONFIGURE_WAKE
+  */
++/* Android-style suspend (phone 2026-10-28): keep connections up across system
++ * suspend. The controller holds the links by itself and wakes the host only
++ * when data arrives (a key press, a headset button), instead of every link
++ * being dropped at suspend and the device reconnecting, which wakes the host
++ * again at once (a reconnect loop with a BLE keyboard). Disconnect Complete is
++ * left enabled so a link lost while asleep still reaches the host.
++ */
++static bool keep_links_on_suspend;
++module_param(keep_links_on_suspend, bool, 0644);
++MODULE_PARM_DESC(keep_links_on_suspend, "Keep links up across system suspend (Android-style)");
++
+ int hci_suspend_sync(struct hci_dev *hdev)
+ {
+ 	int err;
+@@ -6257,7 +6268,7 @@ int hci_suspend_sync(struct hci_dev *hdev)
+ 	/* Prevent disconnects from causing scanning to be re-enabled */
+ 	hci_pause_scan_sync(hdev);
+ 
+-	if (hci_conn_count(hdev)) {
++	if (hci_conn_count(hdev) && !keep_links_on_suspend) {
+ 		/* Soft disconnect everything (power off) */
+ 		err = hci_disconnect_all_sync(hdev, HCI_ERROR_REMOTE_POWER_OFF);
+ 		if (err) {

@@ -1,5 +1,9 @@
 # 10 - "No modem" / no signal after boot: SIM in the wrong slot
 
+No modem or no signal after boot because the SIM is in the wrong slot.
+
+Keywords: OnePlus 6T postmarketOS no modem after boot, fajita mainline SIM slot no signal, pmOS SIM not detected, ModemManager SIM slot switch, Linux phone dual SIM wrong slot, sdm845 no service
+
 **Status: works on our phone (postmarketOS v26.06, 2026-09/10). The slot number is specific to where YOUR SIM is.**
 
 ## Symptom
