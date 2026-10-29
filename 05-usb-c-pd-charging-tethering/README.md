@@ -1,10 +1,10 @@
-# 05 - USB-C: charging, USB Power Delivery and tethering
+# 05 - USB-C: charging, USB Power Delivery, host/device switching, 5 V power out and tethering
 
 The phone charges badly (trickle, flapping), USB tethering fails, or it cannot power or host USB devices.
 
 Keywords: OnePlus 6T postmarketOS USB-C charging, fajita mainline USB PD, pmOS power bank charging stops, sdm845 PMI8998 typec gen1 qcom_smbx, Linux phone USB host device switching, OnePlus 6T 5V OTG out, USB tethering pmOS
 
-**Status: works in our tests (7.1.0-rc1-sdm845, postmarketOS v26.06, early October 2026): PC port,
+**Status: works in our tests (7.1.0-rc1-sdm845, postmarketOS v26.06; on the everyday kernel since 2026-10-24, daily use since): PC port,
 a power bank and one PD charger model. Not tested: a thick C-to-C cable above 1 A, other chargers.**
 The set was sent upstream (to the people named below); it is not merged.
 

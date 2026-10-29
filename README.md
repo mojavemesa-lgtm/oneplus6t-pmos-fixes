@@ -42,9 +42,9 @@ The folder numbers never change; the list is ordered by how much each fix improv
 - [19 Screen-off hang (GPU/GMU)](19-screen-off-hang-gpu-gmu/): two kernel patches plus a kernel command-line option. Not checked on a stock pmOS kernel.
 - [20 Random crash during boot](20-random-crash-during-boot/): glink and fastrpc fixes; 15 of 15 clean restarts.
 - [04 Bluetooth chip hang](04-bt-chip-hang/): serial driver fixes (upstream), confirmed since flashing; a recovery script as stopgap.
-- [05 USB-C charging, USB-PD and tethering](05-usb-c-pd-charging-tethering/): works with the chargers we tried; kernel patches, partly David Heidelberg's RFC; sent upstream, not merged.
+- [05 USB-C charging, USB-PD, automatic host/device switching, 5 V power out, tethering](05-usb-c-pd-charging-tethering/): works, in daily use since 2026-10-24 with the chargers we tried; kernel patches, partly David Heidelberg's RFC; sent upstream, not merged.
 - [23 A/B slot switching bricks the phone](23-ab-slot-switching-brick/): qbootctl patch plus a safe test script.
-- [21 USB networking crash (dwc3)](21-usb-networking-crash-dwc3/): two kernel patches; only hours of testing so far.
+- [21 USB networking crash (dwc3)](21-usb-networking-crash-dwc3/): two kernel patches; this one is new (2026-10-28), short testing so far; separate from 05.
 - [01 Bluetooth headset calls](01-bluetooth-headset-calls/): voice calls through Bluetooth earbuds, both directions, HD voice. Needs a custom kernel (patches on top of Dylan Van Assche's branch).
 - [22 Bluetooth stays connected in sleep](22-bluetooth-stays-connected-in-sleep/): keeps a Bluetooth keyboard or headset linked while the phone sleeps.
 - [16 Camera: autofocus and colours](16-camera-autofocus-colour/): short path to install lolren's camera stack (rear cameras), plus a wider autofocus range. Front camera not fixed yet.
