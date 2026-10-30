@@ -1,0 +1,193 @@
+From: mojavemesa-lgtm <252102886+mojavemesa-lgtm@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 23:34:56 -0700
+Subject: [PATCH] slimbus + ASoC: wcn3990: sound card no longer needs Bluetooth on at boot
+
+The WCN3990 only enumerates on SLIMbus while its Bluetooth part is powered.
+slim_device_probe() defers every driver whose device has no logical address,
+and wcn3990 registered its DAIs only on SLIM_DEVICE_STATUS_UP, so with
+Bluetooth rfkill-blocked at boot the sdm845 card (it has the BT SCO links)
+stayed deferred: no audio at all. Turning Bluetooth on later did not help
+because nothing re-ran the deferred probe once the chip was up.
+
+slimbus core: add slim_set_laddr_on_demand(); a driver calling it from
+probe() binds without a logical address and gets it itself later.
+
+wcn3990: bind on demand, set up regmaps and register the component in
+probe, fetch the PGD + IFC logical addresses when a stream starts
+(wcn3990_enumerate(), as Android's btfm_slim_hw_init() does). Without
+Bluetooth the stream fails with -ENODEV instead of the card missing.
+Status UP no longer re-registers anything on the new path.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+diff --git a/drivers/slimbus/core.c b/drivers/slimbus/core.c
+index ee6318e24..af17770b2 100644
+--- a/drivers/slimbus/core.c
++++ b/drivers/slimbus/core.c
+@@ -73,6 +73,16 @@ static int slim_device_probe(struct device *dev)
+ 	ret = slim_get_logical_addr(sbdev);
+ 	if (!ret) {
+ 		slim_device_update_status(sbdev, SLIM_DEVICE_STATUS_UP);
++	} else if (sbdev->laddr_on_demand) {
++		/*
++		 * The device is powered down (e.g. a Bluetooth chip with its
++		 * radio off) and has not enumerated yet. The driver asked to
++		 * bind anyway and gets the address itself when it needs it,
++		 * so a powered-off device no longer holds up what depends on
++		 * the driver (such as a whole sound card).
++		 */
++		dev_dbg(&sbdev->dev, "no logical address yet, bound on demand\n");
++		ret = 0;
+ 	} else {
+ 		dev_err(&sbdev->dev, "Failed to get logical address\n");
+ 		ret = -EPROBE_DEFER;
+@@ -305,6 +315,22 @@ int slim_unregister_controller(struct slim_controller *ctrl)
+ }
+ EXPORT_SYMBOL_GPL(slim_unregister_controller);
+ 
++/**
++ * slim_set_laddr_on_demand() - let a driver bind before its device enumerates
++ *
++ * @sbdev: Device, from the driver's probe()
++ *
++ * Call from probe() for a device that may be powered down (and so absent from
++ * the bus) when the driver binds, e.g. the audio interface of a Bluetooth chip
++ * whose radio is off. The probe then succeeds without a logical address and the
++ * driver must call slim_get_logical_addr() before it talks to the device.
++ */
++void slim_set_laddr_on_demand(struct slim_device *sbdev)
++{
++	sbdev->laddr_on_demand = true;
++}
++EXPORT_SYMBOL_GPL(slim_set_laddr_on_demand);
++
+ /**
+  * slim_report_absent() - Controller calls this function when a device
+  *	reports absent, OR when the device cannot be communicated with
+diff --git a/include/linux/slimbus.h b/include/linux/slimbus.h
+index a4608d9a9..b74e2f44e 100644
+--- a/include/linux/slimbus.h
++++ b/include/linux/slimbus.h
+@@ -50,6 +50,8 @@ struct slim_controller;
+  * @is_laddr_valid: indicates if the laddr is valid or not
+  * @stream_list: List of streams on this device
+  * @stream_list_lock: lock to protect the stream list
++ * @laddr_on_demand: bind the driver even if the device has no logical address
++ *	yet; set with slim_set_laddr_on_demand()
+  *
+  * This is the client/device handle returned when a SLIMbus
+  * device is registered with a controller.
+@@ -64,6 +66,8 @@ struct slim_device {
+ 	bool			is_laddr_valid;
+ 	struct list_head	stream_list;
+ 	spinlock_t stream_list_lock;
++	/* last member: keeps the offsets above stable for existing modules */
++	bool			laddr_on_demand;
+ };
+ 
+ #define to_slim_device(d) container_of(d, struct slim_device, dev)
+@@ -177,6 +181,7 @@ struct slim_device *of_slim_get_device(struct slim_controller *ctrl,
+ struct slim_device *slim_get_device(struct slim_controller *ctrl,
+ 				    struct slim_eaddr *e_addr);
+ int slim_get_logical_addr(struct slim_device *sbdev);
++void slim_set_laddr_on_demand(struct slim_device *sbdev);
+ 
+ /* Information Element management messages */
+ #define SLIM_MSG_MC_REQUEST_INFORMATION          0x20
+diff --git a/sound/soc/codecs/wcn3990.c b/sound/soc/codecs/wcn3990.c
+index 16ffe6f59..49f932909 100644
+--- a/sound/soc/codecs/wcn3990.c
++++ b/sound/soc/codecs/wcn3990.c
+@@ -57,6 +57,7 @@ struct wcn3990_codec {
+ 	uint16_t direction;
+ 	struct wcn3990_ch *rx_chs;
+ 	struct wcn3990_ch *tx_chs;
++	bool on_demand;		/* bound before enumeration, see wcn3990_slim_probe() */
+ };
+ 
+ struct wcn3990_irq {
+@@ -442,6 +443,28 @@ static void wcn3990_shutdown(struct snd_pcm_substream *substream,
+ 	}
+ };
+ 
++/*
++ * The WCN3990 only enumerates on SLIMbus while its Bluetooth part is powered, so the driver binds
++ * without logical addresses and fetches them here, right before the first register or stream
++ * access. Once Bluetooth is on, the SLIMbus manager in the ADSP knows the chip and the address
++ * query succeeds; while it is off, the stream fails cleanly instead of the whole sound card
++ * staying unregistered.
++ */
++static int wcn3990_enumerate(struct wcn3990_codec *wcn)
++{
++	int ret;
++
++	ret = slim_get_logical_addr(wcn->slim);
++	if (!ret)
++		ret = slim_get_logical_addr(wcn->slim_ifc_dev);
++	if (ret) {
++		dev_err(wcn->dev, "WCN3990 not enumerated on SLIMbus (Bluetooth off?): %d\n", ret);
++		return -ENODEV;
++	}
++
++	return 0;
++}
++
+ /*
+  * Connect this DAI's WCN3990 port(s) and have the SLIMbus manager define and activate the
+  * channel. Does nothing if the DAI's stream is already up.
+@@ -460,6 +483,10 @@ static int wcn3990_start_stream(struct snd_pcm_substream *substream,
+ 	if (!wcn)
+ 		return -EINVAL;
+ 
++	ret = wcn3990_enumerate(wcn);
++	if (ret)
++		return ret;
++
+ 	rm = wcn->if_regmap;
+ 
+ 	if (!wcn->enabled) {
+@@ -917,7 +944,28 @@ static int wcn3990_slim_probe(struct slim_device *slim)
+ 
+ 	dev_set_drvdata(dev, wcn);
+ 
+-	return 0;
++	/*
++	 * Bind even while the chip is not enumerated (Bluetooth off at boot) and register the
++	 * DAIs now; the logical addresses are fetched in wcn3990_enumerate() when a stream starts.
++	 * Before, the DAIs only appeared on SLIM_DEVICE_STATUS_UP, so with Bluetooth blocked at
++	 * boot the sdm845 card (it has the BT SCO links) never registered: no audio at all.
++	 */
++	slim_set_laddr_on_demand(slim);
++	wcn->on_demand = true;
++
++	/* regmap setup does no bus I/O, so it is safe before enumeration */
++	wcn->regmap = devm_regmap_init_slimbus(slim, &wcn3990_regmap_config);
++	if (IS_ERR(wcn->regmap))
++		return dev_err_probe(dev, PTR_ERR(wcn->regmap),
++				     "Failed to allocate slim register map\n");
++
++	wcn->if_regmap = devm_regmap_init_slimbus(wcn->slim_ifc_dev,
++						  &wcn3990_ifc_regmap_config);
++	if (IS_ERR(wcn->if_regmap))
++		return dev_err_probe(dev, PTR_ERR(wcn->if_regmap),
++				     "Failed to allocate ifc register map\n");
++
++	return wcn3990_probe(wcn);
+ }
+ 
+ static int wcn3990_slim_status_up(struct slim_device *sdev)
+@@ -928,6 +976,14 @@ static int wcn3990_slim_status_up(struct slim_device *sdev)
+ 
+ 	wcn = dev_get_drvdata(dev);
+ 
++	/* Bound on demand: component and regmaps already exist, just note the addresses */
++	if (wcn->on_demand) {
++		if (!slim_get_logical_addr(wcn->slim_ifc_dev))
++			dev_info(dev, "WCN3990 logical address 0x%x, IFC 0x%x\n",
++				 sdev->laddr, wcn->slim_ifc_dev->laddr);
++		return 0;
++	}
++
+ 	if (!wcn->slim_ifc_dev) {
+ 		dev_err(dev, "Unable to get SLIM Interface device\n");
+ 		return -EINVAL;
