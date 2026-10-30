@@ -1,0 +1,8 @@
+[Unit]
+Description=Keep phone storage (UFS) at full clock, no scaling/gating (storage hang workaround)
+After=local-fs.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/ufs-fullspeed/ufs-fullspeed.sh
+[Install]
+WantedBy=multi-user.target

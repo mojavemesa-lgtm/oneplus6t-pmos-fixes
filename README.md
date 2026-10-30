@@ -54,6 +54,7 @@ The folder numbers never change; the list is ordered by how much each fix improv
 - [07 Mobile data "connected" but dead](07-cell-data-watcher/): watcher script, a bandaid, works in testing.
 - [09 Chatty daemon restart under Plasma](09-chatty-autorestart-plasma/): works.
 - [11 Auto-rotate dead at boot / portrait on wake](11-autorotate-and-wake-rotation/): works; the powerdevil part needs a package rebuild.
+- [28 Random storage hangs (UFS clock scaling)](28-storage-hang-ufs-clock-scaling/): keeps the storage clock at full speed; no hang since 2026-10-06 (before: one every 1-2 weeks). Boot script, no custom kernel.
 - [24 Freeze watchdog and auto-restart](24-freeze-watchdog-auto-restart/): reboots with a blocked-task dump when storage hangs; generic settings only.
 - [03 Verizon picture messages (MMS)](03-verizon-mms/): works, Verizon only; contains a labelled bandaid.
 - [25 Alert slider feedback](25-alert-slider-feedback/): the hardware ring/vibrate/silent slider gives haptic or sound feedback.

@@ -5,7 +5,7 @@ Random freezes where only a long power-button hold helps, and no log is left beh
 Keywords: OnePlus 6T postmarketOS freeze, fajita mainline random hang power button hold, pmOS pstore ramoops crash log, systemd RuntimeWatchdogSec, sdm845 UFS write hang jbd2, Linux phone auto reboot after hang, kernel.panic reboot
 
 **Status: the storage-hang watcher worked on a real hang (2026-10-06). The hardware-watchdog and panic-reboot settings are NOT
-proven by a real event, and the cause of the storage hang is unknown. This is a mitigation, not a cure.**
+proven by a real event. This is a safety net, not a cure: the workaround that stops the storage hangs is [28](../28-storage-hang-ufs-clock-scaling/).**
 Generic postmarketOS setup, no custom kernel needed.
 
 ## Symptom
@@ -42,4 +42,4 @@ Read the newest files in `/var/lib/systemd/pstore/` (`console-ramoops-0`, `dmesg
 
 ## Status and limits
 - A long power hold wipes RAM, so that crash log can be lost. Reboots done by iowatch keep it.
-- Not a fix for the hang itself. Later kernels may have fixed it.
+- Not a fix for the hang itself: see [28](../28-storage-hang-ufs-clock-scaling/) (UFS clock scaling off), no hang since 2026-10-06 with it.
