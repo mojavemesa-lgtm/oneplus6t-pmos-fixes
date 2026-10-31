@@ -27,5 +27,9 @@
 - The KDE `ImageStackView.qml`, powerdevil and gwenview fixes are small changes to KDE software
   (their licenses apply to those files; gwenview's pinch-gesture crash is also covered upstream by
   KDE merge request !376).
+- **lolren** ([lolren/oneplus6t-pmos-fixes](https://github.com/lolren/oneplus6t-pmos-fixes), MIT): the whole
+  camera stack in `16-camera-autofocus-colour/patches/` (libcamera, PipeWire, kernel and Snapshot patches,
+  tuning files) is their work, copied unchanged; their license is in `patches/LICENSE-lolren-MIT`.
+  libcamera `0001`-`0002` there are **Robert Mader**'s (Collabora), from postmarketOS's libcamera package.
 - Everything else was written by a non-developer together with an AI assistant (Claude, by
   Anthropic). Commits and patches carry an `Assisted-by: Claude` tag where it applies.

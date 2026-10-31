@@ -49,7 +49,7 @@ The folder numbers never change; the list is ordered by how much each fix improv
 - [01 Bluetooth headset calls](01-bluetooth-headset-calls/): voice calls through Bluetooth earbuds, both directions, HD voice. Needs a custom kernel (patches on top of Dylan Van Assche's branch).
 - [27 Sound card missing when Bluetooth is off at boot](27-sound-card-missing-bluetooth-off-at-boot/): one kernel patch (new kernel image needed) on top of 01; no audio until reboot if Bluetooth was blocked at boot. New (2026-10-29), short testing; a boot-unit workaround for people who can't rebuild.
 - [22 Bluetooth stays connected in sleep](22-bluetooth-stays-connected-in-sleep/): keeps a Bluetooth keyboard or headset linked while the phone sleeps.
-- [16 Camera: autofocus and colours](16-camera-autofocus-colour/): short path to install lolren's camera stack (rear cameras), plus a wider autofocus range. Front camera not fixed yet.
+- [16 Camera: autofocus and colours](16-camera-autofocus-colour/): short path to install lolren's camera stack (rear cameras), plus a wider autofocus range, and all their source patches in one place (libcamera, PipeWire, kernel, Snapshot) for building on other distros. Front camera not tested by us yet.
 - [10 SIM slot fix at login](10-sim-slot-fix/): works on our phone; the slot number depends on yours.
 - [07 Mobile data "connected" but dead](07-cell-data-watcher/): watcher script, a bandaid, works in testing.
 - [09 Chatty daemon restart under Plasma](09-chatty-autorestart-plasma/): works.

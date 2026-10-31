@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: CC0-1.0
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4096
+  - Awb:
+  - Ccm:
+      ccms:
+        # Keep equal RGB neutral while gently suppressing the measured
+        # green-channel excess in ordinary scenes. Every row sums to one, so
+        # the deterministic equal-channel calibration frame remains grey.
+        # The stronger r35 candidate is still a scene correction, not a
+        # replacement for a measured colour-chart calibration.
+        - ct: 6500
+          ccm: [ 0.90, 0.10, 0.0,
+                 0.10, 0.80, 0.10,
+                 0.0, 0.10, 0.90 ]
+  - Adjust:
+      gamma: 2.0
+      contrast: 1.1
+      saturation: 1.35
+      sharpness: 1.0
+  - Agc:
+      target: 2.0
+      highlightQuantile: 0.98
+      highlightTarget: 0.95
+...

@@ -80,9 +80,47 @@ sudo sh widen-af-range.sh
 If your phone focuses fine far away with the stock 400..800, skip this. Units differ a little between
 phones, so if distant things are still soft, lower 150 further.
 
+## Build it yourself (NixOS, other distros, your own packages)
+If you can't use lolren's postmarketOS packages, `patches/` has the plain source patches, taken out of
+their pmaports packaging so you don't have to dig. These are **exactly** the files their r35 camera
+release was built from: every file's SHA-512 matches the checksums in lolren's
+`packaging/pmaports/0001-oneplus6t-camera-stack.patch`, and `patches/SHA256SUMS` lists them again. All of
+it is lolren's work (MIT, `patches/LICENSE-lolren-MIT`), except libcamera `0001`-`0002`, which come from
+postmarketOS's own libcamera package (Robert Mader, Collabora).
+
+- `libcamera-0.7.2/` (23 patches, apply in number order on the `v0.7.2` tag): `0001`-`0002` = pmaports'
+  base patches (turn on the software ISP for the simple pipeline). `0003`-`0006` = gain helpers and
+  properties for IMX371/IMX376/IMX519. `0007`-`0023` = software-ISP controls: contrast autofocus,
+  autofocus windows, manual focus (`LensPosition`), exposure, sharpness, white balance, colour matrix,
+  test pattern. Checked 2026-10-30: all 23 apply cleanly on a fresh libcamera v0.7.2 clone.
+- `pipewire-1.6.8/` (2 patches, on the `1.6.8` tag): lets the PipeWire libcamera plugin pass the
+  autofocus and array controls through to apps. Only the `spa-libcamera` plugin changes. Applies cleanly.
+  Without these, apps going through PipeWire (Snapshot) can't trigger autofocus.
+- `kernel-sdm845/` (5 patches, postmarketOS `linux-postmarketos-qcom-sdm845` 7.1-rc1 tree):
+  `0001`-`0003` = the **front camera** fix (IMX371 2304x1728 binned mode, the matching link frequency in
+  the device tree, gain range). `0004` = IMX376 gain range, `0005` = IMX519 preview at 30 fps. All five
+  apply cleanly in order on that tree. lolren's series has two more (`0006` panel brightness, `0007`
+  venus video firmware); they aren't camera, so they aren't here. On another kernel version the
+  line numbers may need a nudge.
+- `tuning/` = lolren's tuning files for the three sensors (the same files their r35 package installs to
+  `/usr/share/libcamera/ipa/simple/`). They need the patched libcamera; stock libcamera may reject some
+  keys. Our wider autofocus range (section above) is `widen-af-range.sh`, applied on top of these.
+- `gnome-snapshot-50.0/` (6 patches on GNOME Snapshot 50.0): tap to focus, focus box, exposure/colour
+  controls, still photos at full frame. Use these if you'd rather patch stock Snapshot. The app we
+  actually use is lolren's **Advanced Snapshot**, a separate repo: build
+  [lolren/advanced-snapshot](https://github.com/lolren/advanced-snapshot) at commit
+  `df308e9d95ba9d90ac6866010db3b95ce9d11de4` (the one their r36 package uses).
+
+Order that matters: the libcamera patches first (the PipeWire and Snapshot patches use the controls they
+add), then PipeWire, then the app. The kernel part is only needed for the front camera.
+
+What we tested ourselves: the rear-camera stack, as lolren's built packages, on our phone. We have not
+built these patches ourselves, and we haven't flashed the front-camera kernel patches (see below), so
+treat the front camera part as lolren's result, not ours.
+
 ## Front camera
 Still grey on our phone. lolren has three kernel patches for it (IMX371 2304x1728 binned mode, a
-device-tree link frequency, and a gain range fix: `patches/` in their repo, `0001`-`0003`). We have
+device-tree link frequency, and a gain range fix: `patches/kernel-sdm845/0001`-`0003` here). We have
 built a kernel with them but have **not flashed and tested it yet**, so we can't vouch for it. Kernel
 changes can stop the phone booting: read [docs/RECOVERY.md](../docs/RECOVERY.md) first.
 
